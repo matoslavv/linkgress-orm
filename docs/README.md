@@ -35,6 +35,15 @@ Complete documentation for Linkgress ORM - A type-safe ORM for PostgreSQL and Ty
   - Default values
   - Custom types
 
+- **[Migrations](./guides/migrations.md)** - Database migrations and schema management
+  - Automatic migrations (currently supported)
+  - Schema creation with `ensureCreated()`
+  - Schema deletion with `ensureDeleted()`
+  - Post-migration hooks for custom SQL
+  - NPM script integration
+  - CI/CD workflow examples
+  - Future: Planned migrations with journal
+
 - **[Querying](./guides/querying.md)** - Query data with type-safe filters, joins, and aggregations
   - Basic queries (SELECT, WHERE, ORDER BY)
   - Nested collections
@@ -76,8 +85,9 @@ Complete documentation for Linkgress ORM - A type-safe ORM for PostgreSQL and Ty
 ### For Beginners
 1. Start with [Getting Started Guide](./getting-started.md)
 2. Learn [Schema Configuration](./guides/schema-configuration.md)
-3. Read [Querying](./guides/querying.md) to master queries
-4. Explore [Collection Strategies](./collection-strategies.md)
+3. Set up [Migrations](./guides/migrations.md) in your workflow
+4. Read [Querying](./guides/querying.md) to master queries
+5. Explore [Collection Strategies](./collection-strategies.md)
 
 ## Contributing to Documentation
 

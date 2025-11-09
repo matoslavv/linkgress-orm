@@ -191,8 +191,10 @@ const db = new AppDatabase(client, {
 });
 
 // Create database schema
-await db.ensureCreated();
+await db.getSchemaManager().ensureCreated();
 ```
+
+See [Migrations Guide](./guides/migrations.md) for automatic migrations, schema management, and integrating migrations into your workflow.
 
 ### Step 4: Query Your Data
 
@@ -314,6 +316,7 @@ const results = await db.users
 ## Next Steps
 
 - **[Schema Configuration](./guides/schema-configuration.md)** - Learn about entity configuration, relations, and indexes
+- **[Migrations](./guides/migrations.md)** - Database migrations, schema management, and workflow integration
 - **[Querying](./guides/querying.md)** - Master type-safe queries, joins, aggregations, and advanced patterns
 - **[Insert/Update/Upsert/BULK](./guides/insert-update-guide.md)** - Master insert, update, delete, and bulk operations
 - **[Collection Strategies](./collection-strategies.md)** - Understand JSONB vs temp table strategies for loading collections
