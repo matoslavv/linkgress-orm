@@ -513,6 +513,13 @@ export class SqlFragment<TValueType = any> extends WhereConditionBase {
   }
 
   /**
+   * Check if value is a RawSql instance
+   */
+  private isRawSql(value: any): value is RawSql {
+    return value instanceof RawSql;
+  }
+
+  /**
    * Build the SQL string with proper parameter placeholders
    */
   buildSql(context: SqlBuildContext): string {
@@ -524,8 +531,12 @@ export class SqlFragment<TValueType = any> extends WhereConditionBase {
       if (i < this.values.length) {
         const value = this.values[i];
 
+        // Check if value is a RawSql - insert directly without parameterization
+        if (this.isRawSql(value)) {
+          sql += value.value;
+        }
         // Check if value is a FieldRef
-        if (this.isFieldRef(value)) {
+        else if (this.isFieldRef(value)) {
           // It's a field reference - use the database column name with table alias if present
           if ('__tableAlias' in value && value.__tableAlias) {
             sql += `"${value.__tableAlias}"."${value.__dbColumnName}"`;
@@ -559,15 +570,117 @@ export class SqlFragment<TValueType = any> extends WhereConditionBase {
 }
 
 /**
+ * Marker class for raw SQL strings that should be inserted without parameterization
+ * Used by sql.raw() to inject SQL directly into queries
+ */
+export class RawSql {
+  constructor(public readonly value: string) {}
+}
+
+/**
  * Tagged template literal for creating SQL fragments
  * Usage: sql`lower(${field})` or sql`${field} = ${value}`
  */
-export function sql<TValueType = any>(
+function sqlTemplate<TValueType = any>(
   strings: TemplateStringsArray,
   ...values: any[]
 ): SqlFragment<TValueType> {
   return new SqlFragment<TValueType>(Array.from(strings), values);
 }
+
+/**
+ * Create a raw SQL string that will be inserted directly without parameterization
+ * WARNING: Do not use with user input - this can lead to SQL injection!
+ * Use for table names, column names, SQL keywords, or trusted static strings only.
+ *
+ * @example
+ * // Use for dynamic table/column names
+ * sql`SELECT * FROM ${sql.raw(tableName)} WHERE ${sql.raw(columnName)} = ${value}`
+ *
+ * // Use for SQL keywords/operators
+ * sql`SELECT * FROM users ORDER BY name ${sql.raw(sortDirection)}`
+ *
+ * // Use for complex SQL that shouldn't be parameterized
+ * sql`SELECT ${sql.raw('COUNT(*)')} FROM users`
+ */
+function raw(value: string): RawSql {
+  return new RawSql(value);
+}
+
+/**
+ * Create an empty SQL fragment
+ * Useful for conditional SQL building
+ *
+ * @example
+ * const condition = shouldFilter ? sql`WHERE active = true` : sql.empty;
+ */
+const empty: SqlFragment<never> = new SqlFragment<never>([''], []);
+
+/**
+ * Join multiple SQL fragments with a separator
+ *
+ * @example
+ * const columns = [sql`name`, sql`email`, sql`age`];
+ * const selectList = sql.join(columns, sql`, `);
+ * // Result: name, email, age
+ */
+function join<T = any>(fragments: SqlFragment<T>[], separator: SqlFragment<any> = new SqlFragment([', '], [])): SqlFragment<T> {
+  if (fragments.length === 0) {
+    return empty as SqlFragment<T>;
+  }
+  if (fragments.length === 1) {
+    return fragments[0];
+  }
+
+  // Build combined parts and values
+  const parts: string[] = [];
+  const values: any[] = [];
+
+  for (let i = 0; i < fragments.length; i++) {
+    const fragment = fragments[i];
+    const fragmentParts = (fragment as any).sqlParts as string[];
+    const fragmentValues = (fragment as any).values as any[];
+
+    if (i > 0) {
+      // Add separator
+      const sepParts = (separator as any).sqlParts as string[];
+      const sepValues = (separator as any).values as any[];
+
+      // Merge last part of current result with separator's first part
+      if (parts.length > 0) {
+        parts[parts.length - 1] += sepParts[0];
+      } else {
+        parts.push(sepParts[0]);
+      }
+
+      for (let j = 0; j < sepValues.length; j++) {
+        values.push(sepValues[j]);
+        parts.push(sepParts[j + 1]);
+      }
+    }
+
+    // Add fragment
+    if (parts.length > 0 && fragmentParts.length > 0) {
+      parts[parts.length - 1] += fragmentParts[0];
+    } else if (fragmentParts.length > 0) {
+      parts.push(fragmentParts[0]);
+    }
+
+    for (let j = 0; j < fragmentValues.length; j++) {
+      values.push(fragmentValues[j]);
+      parts.push(fragmentParts[j + 1]);
+    }
+  }
+
+  return new SqlFragment<T>(parts, values);
+}
+
+// Create the sql function with additional methods
+export const sql = Object.assign(sqlTemplate, {
+  raw,
+  empty,
+  join,
+});
 
 // ============================================================================
 // SQL builder for conditions

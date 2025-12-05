@@ -6,6 +6,13 @@ type Pool = any;
 type PoolClient = any;
 
 /**
+ * Check if a value is a pg.Pool instance
+ */
+function isPgPoolInstance(value: any): boolean {
+  return value && typeof value === 'object' && typeof value.query === 'function' && typeof value.connect === 'function' && typeof value.end === 'function';
+}
+
+/**
  * Wrapper for the pooled connection from pg library
  */
 class PgPooledConnection implements PooledConnection {
@@ -39,18 +46,31 @@ class PgPooledConnection implements PooledConnection {
  */
 export class PgClient extends DatabaseClient {
   private pool: Pool;
+  private ownsConnection: boolean;
 
-  constructor(config: PoolConfig) {
+  /**
+   * Create a PgClient
+   * @param config - Either a PoolConfig object or an existing pg.Pool instance
+   */
+  constructor(config: PoolConfig | Pool) {
     super();
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { Pool } = require('pg');
-      this.pool = new Pool(config);
-    } catch (error) {
-      throw new Error(
-        'PgClient requires the "pg" package to be installed. ' +
-        'Install it with: npm install pg'
-      );
+
+    // Check if config is an existing pg.Pool instance
+    if (isPgPoolInstance(config)) {
+      this.pool = config;
+      this.ownsConnection = false;
+    } else {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { Pool } = require('pg');
+        this.pool = new Pool(config);
+        this.ownsConnection = true;
+      } catch (error) {
+        throw new Error(
+          'PgClient requires the "pg" package to be installed. ' +
+          'Install it with: npm install pg'
+        );
+      }
     }
   }
 
@@ -74,7 +94,10 @@ export class PgClient extends DatabaseClient {
   }
 
   async end(): Promise<void> {
-    await this.pool.end();
+    // Only close the pool if we created it
+    if (this.ownsConnection) {
+      await this.pool.end();
+    }
   }
 
   getDriverName(): string {

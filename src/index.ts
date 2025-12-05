@@ -57,6 +57,7 @@ export {
   ConditionOperator,
   ConditionBuilder,
   SqlFragment,
+  RawSql,
   FieldRef,
   eq,
   ne,

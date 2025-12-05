@@ -5,6 +5,13 @@ import type { PostgresOptions } from './types';
 type Sql = any;
 
 /**
+ * Check if a value is a postgres.Sql instance
+ */
+function isPostgresSqlInstance(value: any): boolean {
+  return value && typeof value === 'function' && typeof value.unsafe === 'function' && typeof value.end === 'function';
+}
+
+/**
  * Wrapper for the pooled connection from postgres library
  */
 class PostgresPooledConnection implements PooledConnection {
@@ -36,18 +43,31 @@ class PostgresPooledConnection implements PooledConnection {
  */
 export class PostgresClient extends DatabaseClient {
   private sql: Sql;
+  private ownsConnection: boolean;
 
-  constructor(config: string | PostgresOptions) {
+  /**
+   * Create a PostgresClient
+   * @param config - Either a connection string, PostgresOptions config object, or an existing postgres.Sql instance
+   */
+  constructor(config: string | PostgresOptions | Sql) {
     super();
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const postgres = require('postgres');
-      this.sql = postgres(config as any);
-    } catch (error) {
-      throw new Error(
-        'PostgresClient requires the "postgres" package to be installed. ' +
-        'Install it with: npm install postgres'
-      );
+
+    // Check if config is an existing postgres.Sql instance
+    if (isPostgresSqlInstance(config)) {
+      this.sql = config;
+      this.ownsConnection = false;
+    } else {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const postgres = require('postgres');
+        this.sql = postgres(config as any);
+        this.ownsConnection = true;
+      } catch (error) {
+        throw new Error(
+          'PostgresClient requires the "postgres" package to be installed. ' +
+          'Install it with: npm install postgres'
+        );
+      }
     }
   }
 
@@ -70,7 +90,10 @@ export class PostgresClient extends DatabaseClient {
   }
 
   async end(): Promise<void> {
-    await this.sql.end();
+    // Only close the connection if we created it
+    if (this.ownsConnection) {
+      await this.sql.end();
+    }
   }
 
   getDriverName(): string {
