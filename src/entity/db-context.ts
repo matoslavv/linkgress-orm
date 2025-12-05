@@ -9,6 +9,8 @@ import { ResolveCollectionResults, CollectionQueryBuilder, ReferenceQueryBuilder
 import { InferRowType } from '../schema/row-type';
 import { DbSchemaManager } from '../migration/db-schema-manager';
 import { DbSequence, SequenceConfig } from '../schema/sequence-builder';
+import type { DbCte } from '../query/cte-builder';
+import type { Subquery } from '../query/subquery';
 
 /**
  * Collection aggregation strategy type
@@ -538,6 +540,14 @@ export class TableAccessor<TBuilder extends TableBuilder<any>> {
   where(condition: (row: InferRowType<TBuilder>) => Condition): QueryBuilder<TableSchema, InferRowType<TBuilder>> {
     const qb = new QueryBuilder<TableSchema, InferRowType<TBuilder>>(this.schema, this.client, undefined, undefined, undefined, undefined, this.executor, undefined, undefined, this.collectionStrategy);
     return qb.where(condition);
+  }
+
+  /**
+   * Add CTEs (Common Table Expressions) to the query
+   */
+  with(...ctes: DbCte<any>[]): SelectQueryBuilder<InferRowType<TBuilder>> {
+    const qb = new QueryBuilder<TableSchema, InferRowType<TBuilder>>(this.schema, this.client, undefined, undefined, undefined, undefined, this.executor, undefined, undefined, this.collectionStrategy);
+    return qb.with(...ctes);
   }
 
   /**
@@ -1669,6 +1679,37 @@ export class DbEntityTable<TEntity extends DbEntity> {
 
     const queryBuilder = this.context.getTable(this.tableName)
       .where(condition as any)
+      .select(allColumnsSelector);
+    return queryBuilder as any as EntitySelectQueryBuilder<TEntity, TEntity>;
+  }
+
+  /**
+   * Add CTEs (Common Table Expressions) to the query
+   */
+  with(...ctes: DbCte<any>[]): EntitySelectQueryBuilder<TEntity, TEntity> {
+    const schema = this._getSchema();
+
+    // Create a selector that selects all columns with navigation property access
+    const allColumnsSelector = (e: any) => {
+      const result: any = {};
+      // Copy all column properties
+      for (const colName of Object.keys(schema.columns)) {
+        result[colName] = e[colName];
+      }
+      // Add navigation properties
+      for (const relName of Object.keys(schema.relations)) {
+        const relConfig = schema.relations[relName];
+        if (relConfig.type === 'many') {
+          result[relName] = [];
+        } else {
+          result[relName] = e[relName];
+        }
+      }
+      return result;
+    };
+
+    const queryBuilder = this.context.getTable(this.tableName)
+      .with(...ctes)
       .select(allColumnsSelector);
     return queryBuilder as any as EntitySelectQueryBuilder<TEntity, TEntity>;
   }

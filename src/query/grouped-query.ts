@@ -4,6 +4,7 @@ import type { DatabaseClient } from '../database/database-client.interface';
 import type { QueryExecutor } from '../entity/db-context';
 import { Subquery } from './subquery';
 import type { ManualJoinDefinition, JoinType } from './query-builder';
+import { CollectionQueryBuilder, ReferenceQueryBuilder } from './query-builder';
 import { DbCte, isCte } from './cte-builder';
 
 /**
@@ -232,6 +233,50 @@ export class GroupedQueryBuilder<TOriginalRow, TGroupingKey> {
         enumerable: true,
         configurable: true,
       });
+    }
+
+    // Add navigation properties (collections and single references)
+    const relationSchemas = new Map<string, TableSchema | undefined>();
+    for (const [relName, relConfig] of Object.entries(this.schema.relations)) {
+      if (relConfig.targetTableBuilder) {
+        relationSchemas.set(relName, relConfig.targetTableBuilder.build());
+      }
+    }
+
+    for (const [relName, relConfig] of Object.entries(this.schema.relations)) {
+      if (relConfig.type === 'many') {
+        const targetSchema = relationSchemas.get(relName);
+        Object.defineProperty(mock, relName, {
+          get: () => {
+            return new CollectionQueryBuilder(
+              relName,
+              relConfig.targetTable,
+              relConfig.foreignKey || relConfig.foreignKeys?.[0] || '',
+              this.schema.name,
+              targetSchema
+            );
+          },
+          enumerable: true,
+          configurable: true,
+        });
+      } else {
+        const targetSchema = relationSchemas.get(relName);
+        Object.defineProperty(mock, relName, {
+          get: () => {
+            const refBuilder = new ReferenceQueryBuilder(
+              relName,
+              relConfig.targetTable,
+              relConfig.foreignKeys || [relConfig.foreignKey || ''],
+              relConfig.matches || [],
+              relConfig.isMandatory ?? false,
+              targetSchema
+            );
+            return refBuilder.createMockTargetRow();
+          },
+          enumerable: true,
+          configurable: true,
+        });
+      }
     }
 
     // Add columns from manually joined tables
@@ -783,6 +828,11 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
 
     // Detect navigation property references in WHERE and add JOINs
     const navigationJoins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean }> = [];
+
+    // Detect joins from the original selection (navigation properties used in select)
+    this.detectAndAddJoinsFromSelection(mockOriginalSelection, navigationJoins);
+
+    // Detect joins from WHERE condition
     this.detectAndAddJoinsFromCondition(this.whereCond, navigationJoins);
 
     // Build FROM clause with JOINs
@@ -893,6 +943,50 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
       });
     }
 
+    // Add navigation properties (collections and single references)
+    const relationSchemas = new Map<string, TableSchema | undefined>();
+    for (const [relName, relConfig] of Object.entries(this.schema.relations)) {
+      if (relConfig.targetTableBuilder) {
+        relationSchemas.set(relName, relConfig.targetTableBuilder.build());
+      }
+    }
+
+    for (const [relName, relConfig] of Object.entries(this.schema.relations)) {
+      if (relConfig.type === 'many') {
+        const targetSchema = relationSchemas.get(relName);
+        Object.defineProperty(mock, relName, {
+          get: () => {
+            return new CollectionQueryBuilder(
+              relName,
+              relConfig.targetTable,
+              relConfig.foreignKey || relConfig.foreignKeys?.[0] || '',
+              this.schema.name,
+              targetSchema
+            );
+          },
+          enumerable: true,
+          configurable: true,
+        });
+      } else {
+        const targetSchema = relationSchemas.get(relName);
+        Object.defineProperty(mock, relName, {
+          get: () => {
+            const refBuilder = new ReferenceQueryBuilder(
+              relName,
+              relConfig.targetTable,
+              relConfig.foreignKeys || [relConfig.foreignKey || ''],
+              relConfig.matches || [],
+              relConfig.isMandatory ?? false,
+              targetSchema
+            );
+            return refBuilder.createMockTargetRow();
+          },
+          enumerable: true,
+          configurable: true,
+        });
+      }
+    }
+
     // Add columns from manually joined tables
     for (const join of this.manualJoins) {
       if ((join as any).isSubquery || !join.schema) {
@@ -987,6 +1081,50 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
             });
           }
         }
+      }
+    }
+  }
+
+  /**
+   * Detect navigation properties in a selection and add JOINs for them
+   */
+  private detectAndAddJoinsFromSelection(
+    selection: any,
+    joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean }>
+  ): void {
+    if (!selection || typeof selection !== 'object') {
+      return;
+    }
+
+    for (const [, value] of Object.entries(selection)) {
+      if (value && typeof value === 'object' && '__tableAlias' in value && '__dbColumnName' in value) {
+        // This is a FieldRef with a table alias - check if it's from a related table
+        const tableAlias = (value as any).__tableAlias as string;
+        if (tableAlias !== this.schema.name && !joins.some(j => j.alias === tableAlias)) {
+          // This references a related table - find the relation and add a JOIN
+          const relation = this.schema.relations[tableAlias];
+          if (relation && relation.type === 'one') {
+            // Get target schema from targetTableBuilder if available
+            let targetSchema: string | undefined;
+            if (relation.targetTableBuilder) {
+              const targetTableSchema = relation.targetTableBuilder.build();
+              targetSchema = targetTableSchema.schema;
+            }
+
+            // Add a JOIN for this reference
+            joins.push({
+              alias: tableAlias,
+              targetTable: relation.targetTable,
+              targetSchema,
+              foreignKeys: relation.foreignKeys || [relation.foreignKey || ''],
+              matches: relation.matches || [],
+              isMandatory: relation.isMandatory ?? false,
+            });
+          }
+        }
+      } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+        // Recursively check nested objects
+        this.detectAndAddJoinsFromSelection(value, joins);
       }
     }
   }

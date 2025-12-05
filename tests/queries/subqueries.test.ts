@@ -856,5 +856,1036 @@ describe('Subquery Operations', () => {
         expect(bobResult?.postStats?.length).toBeGreaterThan(0);
       });
     });
+
+    test('should handle multiple selects with navigation properties and chained orderings', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // Test chained select() calls with navigation properties, mixed with orderBy
+        const result = await db.posts
+          .select(p => ({
+            postId: p.id,
+            postTitle: p.title,
+            ageOfAuthor: p.user!.age
+          }))
+          .select(p => ({
+            postId: p.postId,
+            title: p.postTitle,
+            authorAge: p.ageOfAuthor
+          }))
+          .orderBy(p => [p.authorAge, 'desc'])
+          .select(p => ({
+            id: p.postId,
+            titleUpper: sql<string>`UPPER(${p.title})`,
+            age: p.authorAge,
+          }))
+          .orderBy(p => [p.titleUpper, 'asc'])
+          .toList();
+
+        expect(result.length).toBeGreaterThan(0);
+        result.forEach(r => {
+          expect(r).toHaveProperty('id');
+          expect(r).toHaveProperty('titleUpper');
+          expect(r).toHaveProperty('age');
+          expect(typeof r.titleUpper).toBe('string');
+          expect(r.titleUpper).toBe(r.titleUpper.toUpperCase());
+        });
+
+        // Verify ordering by titleUpper (last orderBy takes precedence)
+        for (let i = 0; i < result.length - 1; i++) {
+          expect(result[i].titleUpper <= result[i + 1].titleUpper).toBe(true);
+        }
+      });
+    });
+
+    test('should handle CTE with multiple navigation property filters and grouped aggregations', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        const cteBuilder = new DbCteBuilder();
+
+        // CTE1: Posts filtered by user navigation properties with grouping
+        const postsByCategoryCte = cteBuilder.withAggregation(
+          'posts_by_category',
+          db.posts
+            .where(p => and(
+              gte(p.user!.age, 25), // Navigation property in filter
+              eq(p.user!.isActive, true) // Another navigation property
+            ))
+            .select(p => ({
+              category: p.category,
+              postId: p.id,
+              views: p.views,
+              authorName: p.user!.username, // Navigation in select
+            }))
+            .groupBy(p => ({ category: p.category }))
+            .select(g => ({
+              category: g.key.category,
+              totalPosts: g.count(),
+              avgViews: g.avg(p => p.views),
+              maxViews: g.max(p => p.views),
+            })),
+          g => ({ category: g.category }),
+          'categoryStats'
+        );
+
+        // Final query with multiple selects and orderings
+        const result = await db.posts
+          .with(postsByCategoryCte)
+          .select(p => ({
+            postId: p.id,
+            title: p.title,
+            cat: p.category
+          }))
+          .leftJoin(
+            postsByCategoryCte,
+            (p, stats) => eq(p.cat, stats.category),
+            (p, stats) => ({
+              postId: p.postId,
+              title: p.title,
+              stats: stats.categoryStats,
+            })
+          )
+          .orderBy(p => [p.postId, 'asc'])
+          .select(p => ({
+            id: p.postId,
+            titleLength: sql<number>`LENGTH(${p.title})`,
+            categoryInfo: p.stats,
+          }))
+          .orderBy(p => [p.titleLength, 'desc'])
+          .toList();
+
+        expect(result.length).toBeGreaterThan(0);
+        result.forEach(r => {
+          expect(r).toHaveProperty('id');
+          expect(r).toHaveProperty('titleLength');
+          expect(r).toHaveProperty('categoryInfo');
+        });
+      });
+    });
+
+    test('should handle deeply nested navigation properties in subquery filters with multiple CTEs', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // Create filter using navigation: find orders where user has posts
+        const userHasPostsFilter = (order: any) => exists(
+          db.posts
+            .where(p => and(
+              eq(p.userId, order.userId),
+              gt(p.views, 50),
+              eq(p.user!.isActive, true) // Navigation in subquery
+            ))
+            .select(p => ({ id: p.id }))
+            .asSubquery('table')
+        );
+
+        const cteBuilder = new DbCteBuilder();
+
+        // CTE1: User stats with order count
+        const userStatsCte = cteBuilder.withAggregation(
+          'user_stats',
+          db.users
+            .where(u => eq(u.isActive, true))
+            .select(u => ({
+              userId: u.id,
+              username: u.username,
+              age: u.age,
+            }))
+            .groupBy(u => ({ userId: u.userId }))
+            .select(g => ({
+              userId: g.key.userId,
+              userCount: g.count(),
+            })),
+          u => ({ userId: u.userId }),
+          'stats'
+        );
+
+        // CTE2: Orders filtered by navigation properties
+        const activeOrdersCte = cteBuilder.withAggregation(
+          'active_orders',
+          db.orders
+            .where(order => and(
+              userHasPostsFilter(order), // Complex filter with navigation
+              gte(order.user!.age, 25) // Direct navigation in where
+            ))
+            .select(o => ({
+              orderId: o.id,
+              userId: o.userId,
+              amount: o.totalAmount,
+              status: o.status,
+            }))
+            .groupBy(o => ({ userId: o.userId }))
+            .select(g => ({
+              userId: g.key.userId,
+              orderCount: g.count(),
+              totalAmount: g.sum(o => o.amount),
+            })),
+          o => ({ userId: o.userId }),
+          'orders'
+        );
+
+        // Final query with multiple selects
+        const result = await db.users
+          .with(userStatsCte)
+          .with(activeOrdersCte)
+          .select(u => ({
+            id: u.id,
+            name: u.username,
+          }))
+          .leftJoin(
+            userStatsCte,
+            (u, stats) => eq(u.id, stats.userId),
+            (u, stats) => ({
+              id: u.id,
+              name: u.name,
+              userStats: stats.stats,
+            })
+          )
+          .select(u => ({
+            userId: u.id,
+            username: u.name,
+            statsData: u.userStats,
+          }))
+          .leftJoin(
+            activeOrdersCte,
+            (u, orders) => eq(u.userId, orders.userId),
+            (u, orders) => ({
+              userId: u.userId,
+              username: u.username,
+              stats: u.statsData,
+              orderInfo: orders.orders,
+            })
+          )
+          .orderBy(u => [u.username, 'asc'])
+          .toList();
+
+        expect(result.length).toBeGreaterThan(0);
+        result.forEach(r => {
+          expect(r).toHaveProperty('userId');
+          expect(r).toHaveProperty('username');
+        });
+      });
+    });
+
+    test('should handle multiple CTEs with navigation properties in aggregations and complex selects', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        const cteBuilder = new DbCteBuilder();
+
+        // CTE1: Post stats by user using navigation
+        const postStatsCte = cteBuilder.withAggregation(
+          'post_stats',
+          db.posts
+            .select(p => ({
+              userId: p.userId,
+              postId: p.id,
+              views: p.views,
+              authorAge: p.user!.age, // Navigation property
+              authorActive: p.user!.isActive, // Another navigation
+            }))
+            .groupBy(p => ({ userId: p.userId }))
+            .select(g => ({
+              userId: g.key.userId,
+              postCount: g.count(),
+              totalViews: g.sum(p => p.views),
+              avgAuthorAge: g.avg(p => p.authorAge),
+            })),
+          p => ({ userId: p.userId }),
+          'postData'
+        );
+
+        // CTE2: Order stats by user
+        const orderStatsCte = cteBuilder.withAggregation(
+          'order_stats',
+          db.orders
+            .where(o => eq(o.user!.isActive, true)) // Navigation in where
+            .select(o => ({
+              userId: o.userId,
+              amount: o.totalAmount,
+              orderStatus: o.status,
+            }))
+            .groupBy(o => ({ userId: o.userId, status: o.orderStatus }))
+            .select(g => ({
+              userId: g.key.userId,
+              status: g.key.status,
+              count: g.count(),
+              total: g.sum(o => o.amount),
+            })),
+          o => ({ userId: o.userId }),
+          'orderData'
+        );
+
+        // Final query with multiple chained selects and orderings
+        const result = await db.users
+          .with(postStatsCte)
+          .with(orderStatsCte)
+          .select(u => ({
+            id: u.id,
+            name: u.username,
+            userAge: u.age,
+          }))
+          .orderBy(u => [u.userAge, 'desc'])
+          .select(u => ({
+            userId: u.id,
+            userName: u.name,
+            age: u.userAge,
+            ageCategory: sql<string>`
+              CASE
+                WHEN ${u.userAge} < 30 THEN 'young'
+                WHEN ${u.userAge} < 40 THEN 'middle'
+                ELSE 'senior'
+              END
+            `,
+          }))
+          .leftJoin(
+            postStatsCte,
+            (u, posts) => eq(u.userId, posts.userId),
+            (u, posts) => ({
+              userId: u.userId,
+              userName: u.userName,
+              age: u.age,
+              ageCategory: u.ageCategory,
+              postStats: posts.postData,
+            })
+          )
+          .select(u => ({
+            id: u.userId,
+            name: u.userName,
+            category: u.ageCategory,
+            posts: u.postStats,
+          }))
+          .orderBy(u => [u.name, 'asc'])
+          .leftJoin(
+            orderStatsCte,
+            (u, orders) => eq(u.id, orders.userId),
+            (u, orders) => ({
+              userId: u.id,
+              userName: u.name,
+              ageCategory: u.category,
+              postInfo: u.posts,
+              orderInfo: orders.orderData,
+            })
+          )
+          .orderBy(u => [u.userId, 'desc'])
+          .toList();
+
+        expect(result.length).toBeGreaterThan(0);
+        result.forEach(r => {
+          expect(r).toHaveProperty('userId');
+          expect(r).toHaveProperty('userName');
+          expect(r).toHaveProperty('ageCategory');
+          expect(['young', 'middle', 'senior']).toContain(r.ageCategory);
+        });
+      });
+    });
+
+    test('should handle navigation properties in exists subqueries with multiple groupBy levels', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // Complex exists filter using navigation in multiple levels
+        const complexFilter = (user: any) => and(
+          exists(
+            db.posts
+              .where(p => and(
+                eq(p.userId, user.id),
+                gt(p.views, 100),
+                eq(p.user!.isActive, true) // Navigation in nested subquery
+              ))
+              .select(p => ({ id: p.id }))
+              .asSubquery('table')
+          ),
+          exists(
+            db.orders
+              .where(o => and(
+                eq(o.userId, user.id),
+                eq(o.user!.isActive, true) // Navigation in another subquery
+              ))
+              .select(o => ({ id: o.id }))
+              .asSubquery('table')
+          )
+        );
+
+        const cteBuilder = new DbCteBuilder();
+
+        // CTE with complex filtering and grouping
+        const filteredUsersCte = cteBuilder.withAggregation(
+          'filtered_users',
+          db.users
+            .where(user => complexFilter(user))
+            .select(u => ({
+              userId: u.id,
+              username: u.username,
+              age: u.age,
+            }))
+            .groupBy(u => ({ userId: u.userId }))
+            .select(g => ({
+              userId: g.key.userId,
+              count: g.count(),
+            })),
+          u => ({ userId: u.userId }),
+          'userData'
+        );
+
+        // Multiple selects with transformations
+        const result = await db.posts
+          .with(filteredUsersCte)
+          .select(p => ({
+            postId: p.id,
+            postTitle: p.title,
+            authorId: p.userId,
+            countOfViews: p.views,
+            ageOfUser: p.user?.age
+          }))
+          .select(p => ({
+            id: p.postId,
+            title: p.postTitle,
+            author: p.authorId,
+            viewCount: p.countOfViews,
+            authorAge: p.ageOfUser, // Navigation property
+          }))
+          .orderBy(p => [p.viewCount, 'desc'])
+          .select(p => ({
+            postId: p.id,
+            titleTrimmed: sql<string>`TRIM(${p.title})`,
+            views: p.viewCount,
+            age: p.authorAge,
+            authorissimo: p.author
+          }))
+          .leftJoin(
+            filteredUsersCte,
+            (p, u) => eq(p.authorissimo, u.userId),
+            (p, u) => ({
+              postId: p.postId,
+              title: p.titleTrimmed,
+              views: p.views,
+              authorAge: p.age,
+              userInfo: u.userData,
+            })
+          )
+          .orderBy(p => [p.postId, 'asc'])
+          .toList();
+
+        expect(result.length).toBeGreaterThan(0);
+        result.forEach(r => {
+          expect(r).toHaveProperty('postId');
+          expect(r).toHaveProperty('title');
+          expect(r).toHaveProperty('views');
+        });
+      });
+    });
+
+    test('should handle CTE with navigation in grouped query, multiple joins, and chained selects', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        const cteBuilder = new DbCteBuilder();
+
+        // CTE1: Posts grouped by category with navigation
+        const postsByCategoryCte = cteBuilder.withAggregation(
+          'posts_by_category',
+          db.posts
+            .where(p => eq(p.user!.isActive, true)) // Navigation filter
+            .select(p => ({
+              category: p.category,
+              postId: p.id,
+              userId: p.userId,
+              views: p.views,
+              authorName: p.user!.username, // Navigation in select
+            }))
+            .groupBy(p => ({ category: p.category }))
+            .select(g => ({
+              category: g.key.category,
+              postCount: g.count(),
+              totalViews: g.sum(p => p.views),
+            })),
+          g => ({ category: g.category }),
+          'stats'
+        );
+
+        // CTE2: Users with order info
+        const usersWithOrdersCte = cteBuilder.withAggregation(
+          'users_with_orders',
+          db.users
+            .select(u => ({
+              userId: u.id,
+              userName: u.username,
+              userAge: u.age,
+            }))
+            .groupBy(u => ({ userId: u.userId }))
+            .select(g => ({
+              userId: g.key.userId,
+              userCount: g.count(),
+            })),
+          u => ({ userId: u.userId }),
+          'userInfo'
+        );
+
+        // Complex query with multiple CTEs, joins, and selects
+        const result = await db.posts
+          .with(postsByCategoryCte)
+          .with(usersWithOrdersCte)
+          .select(p => ({
+            id: p.id,
+            title: p.title,
+            cat: p.category,
+            authorId: p.userId,
+            userMail: p.user?.email
+          }))
+          .orderBy(p => [p.cat, 'asc'])
+          .select(p => ({
+            postId: p.id,
+            postTitle: p.title,
+            category: p.cat,
+            author: p.authorId,
+            authorEmail: p.userMail, // Navigation property
+          }))
+          .leftJoin(
+            postsByCategoryCte,
+            (p: any, stats: any) => eq(p.category, stats.category),
+            (p: any, stats: any) => ({
+              postId: p.postId,
+              title: p.postTitle,
+              category: p.category,
+              authorId: p.author,
+              authorEmail: p.authorEmail,
+              categoryStats: stats.stats,
+            })
+          )
+          .select((p: any) => ({
+            id: p.postId,
+            titleUpper: sql<string>`UPPER(${p.title})`,
+            cat: p.category,
+            authorId: p.authorId,  // Keep authorId for the next join
+            email: p.authorEmail,
+            stats: p.categoryStats,
+          }))
+          .orderBy((p: any) => p.titleUpper)
+          .leftJoin(
+            usersWithOrdersCte,
+            (p: any, u: any) => eq(p.authorId, u.userId),
+            (p: any, u: any) => ({
+              postId: p.id,
+              title: p.titleUpper,
+              category: p.cat,
+              email: p.email,
+              stats: p.stats,
+              userInfo: u.userInfo,
+            })
+          )
+          .orderBy((p: any) => p.postId)
+          .toList();
+
+        expect(result.length).toBeGreaterThan(0);
+        result.forEach((r: any) => {
+          expect(r).toHaveProperty('postId');
+          expect(r).toHaveProperty('title');
+          expect(r).toHaveProperty('category');
+          expect(r.title).toBe(r.title.toUpperCase());
+        });
+      });
+    });
+
+    test('should handle mixed navigation properties and sql expressions in multiple select chains', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // Test complex select chains mixing navigation, sql, and transformations
+        const result = await db.orders
+          .select(o => ({
+            orderId: o.id,
+            orderAmount: o.totalAmount,
+            authorName: o.user!.username, // Navigation property
+            authorAge: o.user!.age, // Another navigation
+          }))
+          .orderBy(o => o.orderAmount)
+          .select(o => ({
+            orderId: o.orderId,
+            totalAmount: o.orderAmount,
+            userName: o.authorName,
+            userAge: o.authorAge,
+            amountCategory: sql<string>`
+              CASE
+                WHEN ${o.orderAmount} < 100 THEN 'small'
+                WHEN ${o.orderAmount} < 200 THEN 'medium'
+                ELSE 'large'
+              END
+            `,
+          }))
+          .orderBy(o => o.userAge)
+          .select(o => ({
+            id: o.orderId,
+            amount: o.totalAmount,
+            user: o.userName,
+            age: o.userAge,
+            category: o.amountCategory,
+            amountFormatted: sql<string>`'$' || CAST(${o.totalAmount} AS VARCHAR)`,
+          }))
+          .orderBy(o => o.category)
+          .select(o => ({
+            orderId: o.id,
+            displayAmount: o.amountFormatted,
+            customerName: o.user,
+            customerAge: o.age,
+            sizeCategory: o.category,
+            computedField: sql<string>`${o.user} || ' (' || CAST(${o.age} AS VARCHAR) || ')'`,
+          }))
+          .orderBy(o => o.customerAge)
+          .toList();
+
+        expect(result.length).toBeGreaterThan(0);
+        result.forEach((r: any) => {
+          expect(r).toHaveProperty('orderId');
+          expect(r).toHaveProperty('displayAmount');
+          expect(r).toHaveProperty('customerName');
+          expect(r).toHaveProperty('customerAge');
+          expect(r).toHaveProperty('sizeCategory');
+          expect(r).toHaveProperty('computedField');
+          expect(['small', 'medium', 'large']).toContain(r.sizeCategory);
+          expect(r.displayAmount).toMatch(/^\$/);
+          expect(r.computedField).toContain(r.customerName);
+        });
+      });
+    });
+
+    test('should handle CTE with navigation in filter, grouped with multiple aggregations, and complex final query', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // Create complex filter with navigation properties
+        const activeUserWithHighViewsFilter = (post: any) => and(
+          eq(post.user!.isActive, true), // Navigation in filter
+          gte(post.user!.age, 25), // Another navigation
+          gt(post.views, 50)
+        );
+
+        const cteBuilder = new DbCteBuilder();
+
+        // CTE1: Aggregated post stats with navigation filters
+        const postAggCte = cteBuilder.withAggregation(
+          'post_aggregations',
+          db.posts
+            .where(post => activeUserWithHighViewsFilter(post))
+            .select(p => ({
+              userId: p.userId,
+              postId: p.id,
+              views: p.views,
+              category: p.category,
+              authorName: p.user!.username, // Navigation in select
+              authorAge: p.user!.age,
+            }))
+            .groupBy(p => ({ userId: p.userId, category: p.category }))
+            .select(g => ({
+              userId: g.key.userId,
+              category: g.key.category,
+              postCount: g.count(),
+              totalViews: g.sum(p => p.views),
+              avgViews: g.avg(p => p.views),
+              maxViews: g.max(p => p.views),
+              minViews: g.min(p => p.views),
+            })),
+          g => ({ userId: g.userId, category: g.category }),
+          'aggregations'
+        );
+
+        // CTE2: Order statistics
+        const orderAggCte = cteBuilder.withAggregation(
+          'order_aggregations',
+          db.orders
+            .where(o => eq(o.user!.isActive, true)) // Navigation filter
+            .select(o => ({
+              userId: o.userId,
+              orderId: o.id,
+              amount: o.totalAmount,
+              status: o.status,
+            }))
+            .groupBy(o => ({ userId: o.userId }))
+            .select(g => ({
+              userId: g.key.userId,
+              orderCount: g.count(),
+              totalSpent: g.sum(o => o.amount),
+              avgSpent: g.avg(o => o.amount),
+            })),
+          g => ({ userId: g.userId }),
+          'orderStats'
+        );
+
+        // Complex final query with multiple selects, joins, and orderings
+        const result = await db.users
+          .where((u: any) => eq(u.isActive, true))
+          .with(postAggCte)
+          .with(orderAggCte)
+          .select((u: any) => ({
+            userId: u.id,
+            userName: u.username,
+            userAge: u.age,      // Include for later use
+            userEmail: u.email,  // Include for later use
+          }))
+          .orderBy((u: any) => u.userName)
+          .select((u: any) => ({
+            id: u.userId,
+            name: u.userName,
+            age: u.userAge,
+            email: u.userEmail,
+          }))
+          .leftJoin(
+            postAggCte,
+            (u: any, posts: any) => eq(u.id, posts.userId),
+            (u: any, posts: any) => ({
+              userId: u.id,
+              userName: u.name,
+              userAge: u.age,
+              userEmail: u.email,
+              postAggregations: posts.aggregations,
+            })
+          )
+          .select((u: any) => ({
+            id: u.userId,
+            name: u.userName,
+            age: u.userAge,
+            email: u.userEmail,
+            postData: u.postAggregations,
+            nameUpper: sql<string>`UPPER(${u.userName})`,
+          }))
+          .orderBy((u: any) => u.age)
+          .leftJoin(
+            orderAggCte,
+            (u: any, orders: any) => eq(u.id, orders.userId),
+            (u: any, orders: any) => ({
+              userId: u.id,
+              displayName: u.name,
+              nameUpper: u.nameUpper,
+              age: u.age,
+              email: u.email,
+              posts: u.postData,
+              orders: orders.orderStats,
+            })
+          )
+          .select((u: any) => ({
+            id: u.userId,
+            name: u.displayName,
+            nameUppercase: u.nameUpper,
+            age: u.age,
+            contactEmail: u.email,
+            postStatistics: u.posts,
+            orderStatistics: u.orders,
+            fullInfo: sql<string>`${u.displayName} || ' <' || ${u.email} || '>'`,
+          }))
+          .orderBy((u: any) => u.nameUppercase)
+          .toList();
+
+        expect(result.length).toBeGreaterThan(0);
+        result.forEach((r: any) => {
+          expect(r).toHaveProperty('id');
+          expect(r).toHaveProperty('name');
+          expect(r).toHaveProperty('nameUppercase');
+          expect(r).toHaveProperty('age');
+          expect(r).toHaveProperty('contactEmail');
+          expect(r).toHaveProperty('fullInfo');
+          expect(r.nameUppercase).toBe(r.name.toUpperCase());
+          expect(r.fullInfo).toContain(r.name);
+          expect(r.fullInfo).toContain(r.contactEmail);
+        });
+      });
+    });
+
+    test('should handle deeply nested CTEs with navigation, subqueries, and multiple transformation layers', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // Multi-level exists filters with navigation
+        const hasActivePostsFilter = (user: any) => exists(
+          db.posts
+            .where(p => and(
+              eq(p.userId, user.id),
+              gt(p.views, 0),
+              eq(p.user!.isActive, true) // Nested navigation
+            ))
+            .select(p => ({ id: p.id }))
+            .asSubquery('table')
+        );
+
+        const hasCompletedOrdersFilter = (user: any) => exists(
+          db.orders
+            .where(o => and(
+              eq(o.userId, user.id),
+              eq(o.status, 'completed'),
+              sql`${o.user!.age} >= 25` // Navigation in subquery
+            ))
+            .select(o => ({ id: o.id }))
+            .asSubquery('table')
+        );
+
+        const cteBuilder = new DbCteBuilder();
+
+        // CTE1: User base data with filters
+        const userBaseCte = cteBuilder.withAggregation(
+          'user_base',
+          db.users
+            .where(u => and(
+              eq(u.isActive, true),
+              hasActivePostsFilter(u),
+              hasCompletedOrdersFilter(u)
+            ))
+            .select(u => ({
+              userId: u.id,
+              userName: u.username,
+              userAge: u.age,
+            }))
+            .groupBy(u => ({ userId: u.userId }))
+            .select(g => ({
+              userId: g.key.userId,
+              count: g.count(),
+            })),
+          u => ({ userId: u.userId }),
+          'baseData'
+        );
+
+        // CTE2: Post statistics by user
+        const postStatsCte = cteBuilder.withAggregation(
+          'post_stats',
+          db.posts
+            .where(p => sql`${p.user!.age} >= 25`) // Navigation filter
+            .select(p => ({
+              userId: p.userId,
+              views: p.views,
+              category: p.category,
+            }))
+            .groupBy(p => ({ userId: p.userId }))
+            .select(g => ({
+              userId: g.key.userId,
+              postCount: g.count(),
+              totalViews: g.sum(p => p.views),
+            })),
+          p => ({ userId: p.userId }),
+          'postData'
+        );
+
+        // CTE3: Order statistics by user
+        const orderStatsCte = cteBuilder.withAggregation(
+          'order_stats',
+          db.orders
+            .where(o => eq(o.user!.isActive, true)) // Navigation filter
+            .select(o => ({
+              userId: o.userId,
+              amount: o.totalAmount,
+            }))
+            .groupBy(o => ({ userId: o.userId }))
+            .select(g => ({
+              userId: g.key.userId,
+              orderCount: g.count(),
+              totalAmount: g.sum(o => o.amount),
+            })),
+          o => ({ userId: o.userId }),
+          'orderData'
+        );
+
+        // Complex final query with 3 CTEs, multiple joins, and transformation layers
+        const result = await db.users
+          .select((u: any) => ({
+            id: u.id,
+            username: u.username,
+            age: u.age,
+            isActive: u.isActive,
+          }))
+          .with(userBaseCte)
+          .with(postStatsCte)
+          .with(orderStatsCte)
+          .select((u: any) => ({
+            id: u.id,
+            name: u.username,
+            age: u.age,
+            isActive: u.isActive,
+          }))
+          .orderBy((u: any) => u.id)
+          .select((u: any) => ({
+            userId: u.id,
+            userName: u.name,
+            userAge: u.age,
+            isActive: u.isActive,
+          }))
+          .leftJoin(
+            userBaseCte,
+            (u: any, base: any) => eq(u.userId, base.userId),
+            (u: any, base: any) => ({
+              userId: u.userId,
+              userName: u.userName,
+              age: u.userAge,
+              active: u.isActive,
+              baseInfo: base.baseData,
+            })
+          )
+          .select((u: any) => ({
+            id: u.userId,
+            name: u.userName,
+            age: u.age,
+            active: u.active,
+            base: u.baseInfo,
+          }))
+          .orderBy((u: any) => u.age)
+          .leftJoin(
+            postStatsCte,
+            (u: any, posts: any) => eq(u.id, posts.userId),
+            (u: any, posts: any) => ({
+              userId: u.id,
+              userName: u.name,
+              age: u.age,
+              active: u.active,
+              baseData: u.base,
+              postData: posts.postData,
+            })
+          )
+          .select((u: any) => ({
+            id: u.userId,
+            name: u.userName,
+            age: u.age,
+            active: u.active,
+            base: u.baseData,
+            posts: u.postData,
+            nameLength: sql<number>`LENGTH(${u.userName})`,
+          }))
+          .orderBy((u: any) => u.nameLength)
+          .leftJoin(
+            orderStatsCte,
+            (u: any, orders: any) => eq(u.id, orders.userId),
+            (u: any, orders: any) => ({
+              userId: u.id,
+              displayName: u.name,
+              age: u.age,
+              isActive: u.active,
+              baseInfo: u.base,
+              postInfo: u.posts,
+              orderInfo: orders.orderData,
+              nameLength: u.nameLength,
+            })
+          )
+          .select((u: any) => ({
+            userId: u.userId,
+            name: u.displayName,
+            age: u.age,
+            active: u.isActive,
+            nameLen: u.nameLength,
+            baseStats: u.baseInfo,
+            postStats: u.postInfo,
+            orderStats: u.orderInfo,
+            summary: sql<string>`
+              ${u.displayName} ||
+              ' (age: ' || CAST(${u.age} AS VARCHAR) ||
+              ', active: ' || CAST(${u.isActive} AS VARCHAR) || ')'
+            `,
+          }))
+          .orderBy((u: any) => u.userId)
+          .toList();
+
+        expect(result.length).toBeGreaterThan(0);
+        result.forEach((r: any) => {
+          expect(r).toHaveProperty('userId');
+          expect(r).toHaveProperty('name');
+          expect(r).toHaveProperty('age');
+          expect(r).toHaveProperty('active');
+          expect(r).toHaveProperty('nameLen');
+          expect(r).toHaveProperty('summary');
+          expect(r.summary).toContain(r.name);
+          expect(r.summary).toContain(r.age.toString());
+        });
+      });
+    });
+
+    test('should handle extreme select chain with navigation properties in every layer and mixed orderings', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // Extreme test: Multiple chained select() calls with navigation properties, orderings, and transformations
+        const result = await db.posts
+          .select(p => ({
+            p1_id: p.id,
+            p1_title: p.title,
+            p1_views: p.views,
+            p1_category: p.category,
+            p1_author: p.user!.username, // Navigation #1
+            p1_authorAge: p.user!.age, // Navigation #2
+            p1_authorEmail: p.user!.email, // Navigation #3
+          }))
+          .orderBy(p => p.p1_id)
+          .select(p => ({
+            p2_id: p.p1_id,
+            p2_title: p.p1_title,
+            p2_views: p.p1_views,
+            p2_category: p.p1_category,
+            p2_author: p.p1_author,
+            p2_age: p.p1_authorAge,
+            p2_email: p.p1_authorEmail,
+            p2_titleLen: sql<number>`LENGTH(${p.p1_title})`,
+          }))
+          .orderBy(p => p.p2_age)
+          .select(p => ({
+            p3_id: p.p2_id,
+            p3_displayTitle: sql<string>`UPPER(${p.p2_title})`,
+            p3_views: p.p2_views,
+            p3_category: p.p2_category,
+            p3_author: p.p2_author,
+            p3_age: p.p2_age,
+            p3_email: p.p2_email,
+            p3_titleLen: p.p2_titleLen,
+          }))
+          .orderBy(p => p.p3_displayTitle)
+          .select(p => ({
+            p4_id: p.p3_id,
+            p4_title: p.p3_displayTitle,
+            p4_views: p.p3_views,
+            p4_category: p.p3_category,
+            p4_author: p.p3_author,
+            p4_age: p.p3_age,
+            p4_email: p.p3_email,
+            p4_len: p.p3_titleLen,
+            p4_viewCategory: sql<string>`
+              CASE
+                WHEN ${p.p3_views} < 100 THEN 'low'
+                WHEN ${p.p3_views} < 200 THEN 'medium'
+                ELSE 'high'
+              END
+            `,
+          }))
+          .orderBy(p => p.p4_views)
+          .select(p => ({
+            finalId: p.p4_id,
+            finalTitle: p.p4_title,
+            finalViews: p.p4_views,
+            finalCategory: p.p4_category,
+            finalAuthor: p.p4_author,
+            finalAge: p.p4_age,
+            finalEmail: p.p4_email,
+            finalTitleLen: p.p4_len,
+            finalViewCategory: p.p4_viewCategory,
+            finalSummary: sql<string>`
+              ${p.p4_title} || ' by ' || ${p.p4_author} ||
+              ' (views: ' || CAST(${p.p4_views} AS VARCHAR) || ')'
+            `,
+          }))
+          .orderBy(p => p.finalId)
+          .toList();
+
+        expect(result.length).toBeGreaterThan(0);
+        result.forEach((r: any) => {
+          expect(r).toHaveProperty('finalId');
+          expect(r).toHaveProperty('finalTitle');
+          expect(r).toHaveProperty('finalAuthor');
+          expect(r).toHaveProperty('finalAge');
+          expect(r).toHaveProperty('finalEmail');
+          expect(r).toHaveProperty('finalViews');
+          expect(r).toHaveProperty('finalCategory');
+          expect(r).toHaveProperty('finalSummary');
+          expect(r).toHaveProperty('finalViewCategory');
+          expect(r).toHaveProperty('finalTitleLen');
+          expect(typeof r.finalTitle).toBe('string');
+          expect(typeof r.finalAuthor).toBe('string');
+          expect(typeof r.finalAge).toBe('number');
+          expect(typeof r.finalEmail).toBe('string');
+          expect(['low', 'medium', 'high']).toContain(r.finalViewCategory);
+        });
+      });
+    });
   });
 });

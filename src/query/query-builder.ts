@@ -121,6 +121,28 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
   }
 
   /**
+   * Add CTEs (Common Table Expressions) to the query
+   */
+  with(...ctes: DbCte<any>[]): SelectQueryBuilder<TRow> {
+    return new SelectQueryBuilder(
+      this.schema,
+      this.client,
+      (row: any) => row,
+      this.whereCond,
+      this.limitValue,
+      this.offsetValue,
+      this.orderByFields,
+      this.executor,
+      this.manualJoins,
+      this.joinCounter,
+      false,
+      undefined,
+      ctes,
+      this.collectionStrategy
+    );
+  }
+
+  /**
    * Create mock row for analysis
    */
   private createMockRow(): any {
@@ -606,7 +628,9 @@ export class SelectQueryBuilder<TSelection> {
     const mockRow = this.createMockRow();
     // Apply the selector to get the selected shape that the user sees in the WHERE condition
     const selectedMock = this.selector(mockRow);
-    this.whereCond = condition(selectedMock);
+    // Wrap in proxy - for WHERE, we preserve original column names
+    const fieldRefProxy = this.createFieldRefProxy(selectedMock, true);
+    this.whereCond = condition(fieldRefProxy);
     return this;
   }
 
@@ -654,7 +678,12 @@ export class SelectQueryBuilder<TSelection> {
   orderBy(selector: (row: TSelection) => any | any[] | Array<[any, 'ASC' | 'DESC']>): this {
     const mockRow = this.createMockRow();
     const selectedMock = this.selector(mockRow);
-    const result = selector(selectedMock);
+    // Wrap selectedMock in a proxy that returns FieldRefs for property access
+    const fieldRefProxy = this.createFieldRefProxy(selectedMock);
+    const result = selector(fieldRefProxy);
+
+    // Clear previous orderBy - last one takes precedence
+    this.orderByFields = [];
 
     // Handle array of [field, direction] tuples
     if (Array.isArray(result) && result.length > 0 && Array.isArray(result[0])) {
@@ -1879,6 +1908,74 @@ export class SelectQueryBuilder<TSelection> {
     }
 
     return mock;
+  }
+
+  /**
+   * Create a proxy that wraps selected values and returns FieldRefs for property access
+   * This enables orderBy and other operations to work with chained selects
+   * @param preserveOriginal - If true (for WHERE), preserve original column names; if false (for ORDER BY), use alias names
+   */
+  private createFieldRefProxy(selectedMock: any, preserveOriginal: boolean = false): any {
+    if (!selectedMock || typeof selectedMock !== 'object') {
+      return selectedMock;
+    }
+
+    // If it already has FieldRef properties, return as-is
+    if ('__fieldName' in selectedMock && '__dbColumnName' in selectedMock) {
+      return selectedMock;
+    }
+
+    // Create a proxy that returns FieldRefs for each property access
+    return new Proxy(selectedMock, {
+      get: (target, prop) => {
+        if (typeof prop === 'symbol' || prop === 'constructor' || prop === 'then') {
+          return target[prop];
+        }
+
+        const value = target[prop];
+
+        // If the value is already a FieldRef
+        if (value && typeof value === 'object' && '__fieldName' in value && '__dbColumnName' in value) {
+          if (preserveOriginal) {
+            // For WHERE: preserve original column name and table alias
+            // This ensures WHERE references the actual database column
+            return {
+              __fieldName: prop as string,
+              __dbColumnName: (value as any).__dbColumnName,
+              __tableAlias: (value as any).__tableAlias,
+            };
+          } else {
+            // For ORDER BY: use the alias (property name) as the column name
+            // In chained selects, the alias becomes the column name in the subquery
+            return {
+              __fieldName: prop as string,
+              __dbColumnName: prop as string,
+              // No table alias - column comes from the selection/subquery
+            };
+          }
+        }
+
+        // If the value is a SqlFragment, treat it as a FieldRef using the property name as the alias
+        if (value && typeof value === 'object' && value instanceof SqlFragment) {
+          return {
+            __fieldName: prop as string,
+            __dbColumnName: prop as string,
+          };
+        }
+
+        // If the value is an object (nested selection), recursively wrap it
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          return this.createFieldRefProxy(value, preserveOriginal);
+        }
+
+        // For primitive values or arrays, create a FieldRef
+        // Use the property name as both fieldName and dbColumnName
+        return {
+          __fieldName: prop as string,
+          __dbColumnName: prop as string,
+        };
+      }
+    });
   }
 
   /**

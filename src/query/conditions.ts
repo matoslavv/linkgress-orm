@@ -1,3 +1,5 @@
+import type { DbColumn } from '../entity/db-column';
+
 /**
  * SQL condition types
  */
@@ -17,6 +19,16 @@ export interface FieldRef<TName extends string = string, TValueType = any> {
   readonly __dbColumnName: string;
   readonly __valueType?: TValueType; // Phantom type - exists only for type checking
 }
+
+/**
+ * Type that represents anything that can be used as a field in a condition.
+ * This includes FieldRef, DbColumn, or any object with __dbColumnName.
+ * Allows navigation properties (which return EntityQuery<DbColumn<T>>) to work in conditions.
+ */
+export type FieldLike<V = any> =
+  | FieldRef<any, V>
+  | DbColumn<V>
+  | { __dbColumnName: string; __fieldName?: string };
 
 /**
  * Extract the field name from a FieldRef or string
@@ -81,7 +93,7 @@ export abstract class WhereConditionBase {
   /**
    * Helper to extract value from a FieldRef or constant
    */
-  protected extractValue<V>(value: FieldRef<any, V> | V): any {
+  protected extractValue<V>(value: FieldLike<V> | V): any {
     if (this.isFieldRef(value)) {
       return value.__dbColumnName;
     }
@@ -92,11 +104,11 @@ export abstract class WhereConditionBase {
    * Helper to get the right-hand side of a comparison
    * Returns either a column reference or a parameter placeholder
    */
-  protected getRightSide<V>(value: FieldRef<any, V> | V, context: SqlBuildContext): string {
+  protected getRightSide<V>(value: FieldLike<V> | V, context: SqlBuildContext): string {
     if (this.isFieldRef(value)) {
       // Value is a field reference, use it with table alias if present
-      if ('__tableAlias' in value && value.__tableAlias) {
-        return `"${value.__tableAlias}"."${value.__dbColumnName}"`;
+      if ('__tableAlias' in value && (value as any).__tableAlias) {
+        return `"${(value as any).__tableAlias}"."${value.__dbColumnName}"`;
       }
       return `"${value.__dbColumnName}"`;
     } else {
@@ -112,8 +124,8 @@ export abstract class WhereConditionBase {
  */
 export abstract class WhereComparisonBase<V = any> extends WhereConditionBase {
   constructor(
-    protected field: FieldRef<any, V> | string,
-    protected value?: FieldRef<any, V> | V
+    protected field: FieldLike<V> | string,
+    protected value?: FieldLike<V> | V
   ) {
     super();
   }
@@ -269,7 +281,7 @@ export class ILikeComparison extends WhereComparisonBase<string> {
 }
 
 export class IsNullComparison<V = any> extends WhereComparisonBase<V> {
-  constructor(field: FieldRef<any, V> | string) {
+  constructor(field: FieldLike<V> | string) {
     super(field, undefined);
   }
 
@@ -279,7 +291,7 @@ export class IsNullComparison<V = any> extends WhereComparisonBase<V> {
 }
 
 export class IsNotNullComparison<V = any> extends WhereComparisonBase<V> {
-  constructor(field: FieldRef<any, V> | string) {
+  constructor(field: FieldLike<V> | string) {
     super(field, undefined);
   }
 
@@ -293,7 +305,7 @@ export class IsNotNullComparison<V = any> extends WhereComparisonBase<V> {
  */
 export class InComparison<V = any> extends WhereComparisonBase<V> {
   constructor(
-    field: FieldRef<any, V> | string,
+    field: FieldLike<V> | string,
     private values: V[]
   ) {
     super(field, undefined);
@@ -321,7 +333,7 @@ export class InComparison<V = any> extends WhereComparisonBase<V> {
  */
 export class NotInComparison<V = any> extends WhereComparisonBase<V> {
   constructor(
-    field: FieldRef<any, V> | string,
+    field: FieldLike<V> | string,
     private values: V[]
   ) {
     super(field, undefined);
@@ -349,9 +361,9 @@ export class NotInComparison<V = any> extends WhereComparisonBase<V> {
  */
 export class BetweenComparison<V = any> extends WhereComparisonBase<V> {
   constructor(
-    field: FieldRef<any, V> | string,
-    private min: FieldRef<any, V> | V,
-    private max: FieldRef<any, V> | V
+    field: FieldLike<V> | string,
+    private min: FieldLike<V> | V,
+    private max: FieldLike<V> | V
   ) {
     super(field, undefined);
   }
@@ -397,93 +409,93 @@ export type Condition = WhereConditionBase;
 // ============================================================================
 
 export function eq<T extends string, V>(
-  field: FieldRef<T, V> | T,
-  value: FieldRef<any, V> | V
+  field: FieldLike<V> | T | undefined,
+  value: FieldLike<V> | V | undefined
 ): Condition {
-  return new EqComparison<V>(field, value);
+  return new EqComparison<V>(field!, value!);
 }
 
 export function ne<T extends string, V>(
-  field: FieldRef<T, V> | T,
-  value: FieldRef<any, V> | V
+  field: FieldLike<V> | T | undefined,
+  value: FieldLike<V> | V | undefined
 ): Condition {
-  return new NeComparison<V>(field, value);
+  return new NeComparison<V>(field!, value!);
 }
 
 export function gt<T extends string, V>(
-  field: FieldRef<T, V> | T,
-  value: FieldRef<any, V> | V
+  field: FieldLike<V> | T | undefined,
+  value: FieldLike<V> | V | undefined
 ): Condition {
-  return new GtComparison<V>(field, value);
+  return new GtComparison<V>(field!, value!);
 }
 
 export function gte<T extends string, V>(
-  field: FieldRef<T, V> | T,
-  value: FieldRef<any, V> | V
+  field: FieldLike<V> | T | undefined,
+  value: FieldLike<V> | V | undefined
 ): Condition {
-  return new GteComparison<V>(field, value);
+  return new GteComparison<V>(field!, value!);
 }
 
 export function lt<T extends string, V>(
-  field: FieldRef<T, V> | T,
-  value: FieldRef<any, V> | V
+  field: FieldLike<V> | T | undefined,
+  value: FieldLike<V> | V | undefined
 ): Condition {
-  return new LtComparison<V>(field, value);
+  return new LtComparison<V>(field!, value!);
 }
 
 export function lte<T extends string, V>(
-  field: FieldRef<T, V> | T,
-  value: FieldRef<any, V> | V
+  field: FieldLike<V> | T | undefined,
+  value: FieldLike<V> | V | undefined
 ): Condition {
-  return new LteComparison<V>(field, value);
+  return new LteComparison<V>(field!, value!);
 }
 
 export function like<T extends string>(
-  field: FieldRef<T, string> | T,
-  value: FieldRef<any, string> | string
+  field: FieldLike<string> | T | undefined,
+  value: FieldLike<string> | string | undefined
 ): Condition {
-  return new LikeComparison(field, value);
+  return new LikeComparison(field!, value!);
 }
 
 export function ilike<T extends string>(
-  field: FieldRef<T, string> | T,
-  value: FieldRef<any, string> | string
+  field: FieldLike<string> | T | undefined,
+  value: FieldLike<string> | string | undefined
 ): Condition {
-  return new ILikeComparison(field, value);
+  return new ILikeComparison(field!, value!);
 }
 
 export function inArray<T extends string, V>(
-  field: FieldRef<T, V> | T,
+  field: FieldLike<V> | T | undefined,
   values: V[]
 ): Condition {
-  return new InComparison<V>(field, values);
+  return new InComparison<V>(field!, values);
 }
 
 export function notInArray<T extends string, V>(
-  field: FieldRef<T, V> | T,
+  field: FieldLike<V> | T | undefined,
   values: V[]
 ): Condition {
-  return new NotInComparison<V>(field, values);
+  return new NotInComparison<V>(field!, values);
 }
 
 export function isNull<T extends string, V>(
-  field: FieldRef<T, V> | T
+  field: FieldLike<V> | T | undefined
 ): Condition {
-  return new IsNullComparison<V>(field);
+  return new IsNullComparison<V>(field!);
 }
 
 export function isNotNull<T extends string, V>(
-  field: FieldRef<T, V> | T
+  field: FieldLike<V> | T | undefined
 ): Condition {
-  return new IsNotNullComparison<V>(field);
+  return new IsNotNullComparison<V>(field!);
 }
 
 export function between<T extends string, V>(
-  field: FieldRef<T, V> | T,
-  min: FieldRef<any, V> | V,
-  max: FieldRef<any, V> | V
+  field: FieldLike<V> | T | undefined,
+  min: FieldLike<V> | V | undefined,
+  max: FieldLike<V> | V | undefined
 ): Condition {
-  return new BetweenComparison<V>(field, min, max);
+  return new BetweenComparison<V>(field!, min!, max!);
 }
 
 export function and(...conditions: Condition[]): Condition {
