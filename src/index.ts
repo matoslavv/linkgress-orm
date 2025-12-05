@@ -42,6 +42,7 @@ export {
 export {
   GroupedQueryBuilder,
   GroupedSelectQueryBuilder,
+  GroupedJoinedQueryBuilder,
   GroupedItem,
 } from './query/grouped-query';
 

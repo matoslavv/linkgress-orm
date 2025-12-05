@@ -1,6 +1,6 @@
 import { describe, test, expect } from '@jest/globals';
 import { withDatabase, seedTestData } from '../utils/test-database';
-import { eq, gt } from '../../src';
+import { eq, gt, DbCteBuilder } from '../../src';
 
 describe('Grouping and Aggregation', () => {
   describe('Basic GROUP BY', () => {
@@ -347,6 +347,392 @@ describe('Grouping and Aggregation', () => {
         // Should have a group for NULL subtitles
         const nullGroup = result.find(r => r.subtitle === null || r.subtitle === undefined);
         expect(nullGroup).toBeDefined();
+      });
+    });
+  });
+
+  describe('Grouped query with JOIN', () => {
+    test('should LEFT JOIN grouped query with CTE', async () => {
+      await withDatabase(async (db) => {
+        const { users } = await seedTestData(db);
+
+        // Create a CTE with user details
+        const cteBuilder = new DbCteBuilder();
+        const userDetailsCte = cteBuilder.with(
+          'user_details',
+          db.users.select(u => ({
+            userId: u.id,
+            username: u.username,
+            email: u.email,
+          }))
+        );
+
+        // Group posts by userId and LEFT JOIN with user details CTE
+        const result = await db.posts
+          .select(p => ({
+            userId: p.userId,
+            views: p.views,
+          }))
+          .groupBy(p => ({
+            userId: p.userId,
+          }))
+          .select(g => ({
+            userId: g.key.userId,
+            totalViews: g.sum(p => p.views),
+            postCount: g.count(),
+          }))
+          .leftJoin(
+            userDetailsCte.cte,
+            (stats, user) => eq(stats.userId, user.userId),
+            (stats, user) => ({
+              userId: stats.userId,
+              totalViews: stats.totalViews,
+              postCount: stats.postCount,
+              username: user.username,
+              email: user.email,
+            })
+          )
+          .toList();
+
+        expect(result.length).toBeGreaterThan(0);
+
+        // Verify we got user details joined
+        const aliceStats = result.find(r => r.username === 'alice');
+        expect(aliceStats).toBeDefined();
+        expect(aliceStats?.totalViews).toBe(250); // 100 + 150
+        expect(aliceStats?.postCount).toBe(2);
+        expect(aliceStats?.email).toBe('alice@test.com');
+      });
+    });
+
+    test('should INNER JOIN grouped query with CTE', async () => {
+      await withDatabase(async (db) => {
+        const { users } = await seedTestData(db);
+
+        // Create a CTE with only active users
+        const cteBuilder = new DbCteBuilder();
+        const activeUsersCte = cteBuilder.with(
+          'active_users',
+          db.users
+            .where(u => eq(u.isActive, true))
+            .select(u => ({
+              userId: u.id,
+              username: u.username,
+            }))
+        );
+
+        // Group posts and INNER JOIN - should only get posts from active users
+        const result = await db.posts
+          .select(p => ({
+            userId: p.userId,
+            views: p.views,
+          }))
+          .groupBy(p => ({
+            userId: p.userId,
+          }))
+          .select(g => ({
+            userId: g.key.userId,
+            totalViews: g.sum(p => p.views),
+          }))
+          .innerJoin(
+            activeUsersCte.cte,
+            (stats, user) => eq(stats.userId, user.userId),
+            (stats, user) => ({
+              userId: stats.userId,
+              totalViews: stats.totalViews,
+              username: user.username,
+            })
+          )
+          .toList();
+
+        expect(result.length).toBeGreaterThan(0);
+
+        // All results should be from active users
+        result.forEach(r => {
+          expect(r.username).toBeDefined();
+        });
+      });
+    });
+
+    test('should LEFT JOIN grouped query with subquery', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // Create a subquery with user info
+        const userSubquery = db.users
+          .select(u => ({
+            userId: u.id,
+            username: u.username,
+            age: u.age,
+          }))
+          .asSubquery('table');
+
+        // Group posts and LEFT JOIN with user subquery
+        const result = await db.posts
+          .select(p => ({
+            userId: p.userId,
+            views: p.views,
+          }))
+          .groupBy(p => ({
+            userId: p.userId,
+          }))
+          .select(g => ({
+            userId: g.key.userId,
+            maxViews: g.max(p => p.views),
+            minViews: g.min(p => p.views),
+          }))
+          .leftJoin(
+            userSubquery,
+            (stats, user) => eq(stats.userId, user.userId),
+            (stats, user) => ({
+              userId: stats.userId,
+              maxViews: stats.maxViews,
+              minViews: stats.minViews,
+              username: user.username,
+              age: user.age,
+            }),
+            'user_info'
+          )
+          .toList();
+
+        expect(result.length).toBeGreaterThan(0);
+
+        // Verify we got user details joined
+        const aliceStats = result.find(r => r.username === 'alice');
+        expect(aliceStats).toBeDefined();
+        expect(aliceStats?.maxViews).toBe(150);
+        expect(aliceStats?.minViews).toBe(100);
+        expect(aliceStats?.age).toBe(25);
+      });
+    });
+
+    test('should support orderBy on grouped joined query', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        const cteBuilder = new DbCteBuilder();
+        const usersCte = cteBuilder.with(
+          'users_cte',
+          db.users.select(u => ({
+            userId: u.id,
+            username: u.username,
+          }))
+        );
+
+        const result = await db.posts
+          .select(p => ({
+            userId: p.userId,
+            views: p.views,
+          }))
+          .groupBy(p => ({
+            userId: p.userId,
+          }))
+          .select(g => ({
+            userId: g.key.userId,
+            totalViews: g.sum(p => p.views),
+          }))
+          .leftJoin(
+            usersCte.cte,
+            (stats, user) => eq(stats.userId, user.userId),
+            (stats, user) => ({
+              userId: stats.userId,
+              totalViews: stats.totalViews,
+              username: user.username,
+            })
+          )
+          .orderBy(r => [[r.totalViews, 'DESC']])
+          .toList();
+
+        expect(result.length).toBeGreaterThan(0);
+
+        // Verify ordering - totalViews should be descending
+        for (let i = 1; i < result.length; i++) {
+          expect(result[i - 1].totalViews).toBeGreaterThanOrEqual(result[i].totalViews);
+        }
+      });
+    });
+
+    test('should support limit and offset on grouped joined query', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        const cteBuilder = new DbCteBuilder();
+        const usersCte = cteBuilder.with(
+          'users_cte',
+          db.users.select(u => ({
+            userId: u.id,
+            username: u.username,
+          }))
+        );
+
+        const result = await db.posts
+          .select(p => ({
+            userId: p.userId,
+            views: p.views,
+          }))
+          .groupBy(p => ({
+            userId: p.userId,
+          }))
+          .select(g => ({
+            userId: g.key.userId,
+            totalViews: g.sum(p => p.views),
+          }))
+          .leftJoin(
+            usersCte.cte,
+            (stats, user) => eq(stats.userId, user.userId),
+            (stats, user) => ({
+              userId: stats.userId,
+              totalViews: stats.totalViews,
+              username: user.username,
+            })
+          )
+          .limit(1)
+          .toList();
+
+        expect(result).toHaveLength(1);
+      });
+    });
+
+    test('should convert grouped joined query to subquery', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        const cteBuilder = new DbCteBuilder();
+        const usersCte = cteBuilder.with(
+          'users_cte',
+          db.users.select(u => ({
+            userId: u.id,
+            username: u.username,
+          }))
+        );
+
+        // Create a subquery from the grouped+joined result
+        const statsSubquery = db.posts
+          .select(p => ({
+            userId: p.userId,
+            views: p.views,
+          }))
+          .groupBy(p => ({
+            userId: p.userId,
+          }))
+          .select(g => ({
+            userId: g.key.userId,
+            totalViews: g.sum(p => p.views),
+          }))
+          .leftJoin(
+            usersCte.cte,
+            (stats, user) => eq(stats.userId, user.userId),
+            (stats, user) => ({
+              userId: stats.userId,
+              totalViews: stats.totalViews,
+              username: user.username,
+            })
+          )
+          .asSubquery('table');
+
+        // Use the subquery in another query
+        const result = await db.users
+          .innerJoin(
+            statsSubquery,
+            (user, stats) => eq(user.id, stats.userId),
+            (user, stats) => ({
+              id: user.id,
+              email: user.email,
+              totalViews: stats.totalViews,
+              username: stats.username,
+            }),
+            'stats'
+          )
+          .toList();
+
+        expect(result.length).toBeGreaterThan(0);
+
+        const alice = result.find(r => r.email === 'alice@test.com');
+        expect(alice).toBeDefined();
+        expect(alice?.totalViews).toBe(250);
+      });
+    });
+
+    test('should support first() on grouped joined query', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        const cteBuilder = new DbCteBuilder();
+        const usersCte = cteBuilder.with(
+          'users_cte',
+          db.users.select(u => ({
+            userId: u.id,
+            username: u.username,
+          }))
+        );
+
+        const result = await db.posts
+          .select(p => ({
+            userId: p.userId,
+            views: p.views,
+          }))
+          .groupBy(p => ({
+            userId: p.userId,
+          }))
+          .select(g => ({
+            userId: g.key.userId,
+            totalViews: g.sum(p => p.views),
+          }))
+          .leftJoin(
+            usersCte.cte,
+            (stats, user) => eq(stats.userId, user.userId),
+            (stats, user) => ({
+              userId: stats.userId,
+              totalViews: stats.totalViews,
+              username: user.username,
+            })
+          )
+          .first();
+
+        expect(result).not.toBeNull();
+        expect(result?.userId).toBeDefined();
+        expect(result?.totalViews).toBeDefined();
+        expect(result?.username).toBeDefined();
+      });
+    });
+
+    test('should return null from first() when no results', async () => {
+      await withDatabase(async (db) => {
+        // No data seeded
+
+        const cteBuilder = new DbCteBuilder();
+        const usersCte = cteBuilder.with(
+          'users_cte',
+          db.users.select(u => ({
+            userId: u.id,
+            username: u.username,
+          }))
+        );
+
+        const result = await db.posts
+          .select(p => ({
+            userId: p.userId,
+            views: p.views,
+          }))
+          .groupBy(p => ({
+            userId: p.userId,
+          }))
+          .select(g => ({
+            userId: g.key.userId,
+            totalViews: g.sum(p => p.views),
+          }))
+          .leftJoin(
+            usersCte.cte,
+            (stats, user) => eq(stats.userId, user.userId),
+            (stats, user) => ({
+              userId: stats.userId,
+              totalViews: stats.totalViews,
+              username: user.username,
+            })
+          )
+          .first();
+
+        expect(result).toBeNull();
       });
     });
   });
