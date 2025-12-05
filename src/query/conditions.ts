@@ -41,6 +41,44 @@ export type ExtractFieldName<T> = T extends FieldRef<infer N, any> ? N : T exten
 export type ExtractValueType<T> = T extends FieldRef<any, infer V> ? V : any;
 
 /**
+ * Forward declaration for SqlFragment (actual class defined later in this file)
+ * Used by UnwrapSqlFragment type
+ */
+export interface SqlFragmentLike<T = any> {
+  mapWith: any;
+  as: any;
+  getMapper: any;
+  getAlias: any;
+  getFieldRefs: any;
+  buildSql: any;
+  /** Phantom property to hold the value type - never actually set */
+  readonly __valueType?: T;
+}
+
+/**
+ * Unwrap SqlFragment<T> to T, or return T if not a SqlFragment
+ * This is used to extract the actual value type from SQL expressions in selections
+ */
+export type UnwrapSqlFragment<T> = T extends SqlFragmentLike<infer V> ? V : T;
+
+/**
+ * Recursively unwrap all SqlFragment types in an object type
+ * Maps { a: SqlFragment<number>, b: string } to { a: number, b: string }
+ * Preserves arrays, functions, and primitive types without recursing into them
+ */
+export type UnwrapSelection<T> = T extends SqlFragment<infer V>
+  ? V
+  : T extends SqlFragmentLike<infer V>
+    ? V
+    : T extends (infer U)[]
+      ? UnwrapSelection<U>[]
+      : T extends (...args: any[]) => any
+        ? T  // Preserve functions as-is
+        : T extends object
+          ? { [K in keyof T]: UnwrapSelection<T[K]> }
+          : T;
+
+/**
  * Context for building SQL with parameter tracking
  */
 export interface SqlBuildContext {

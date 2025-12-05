@@ -4,7 +4,7 @@ import { UnwrapDbColumns, InsertData, ExtractDbColumns } from './db-column';
 import { DbEntity, EntityConstructor, EntityMetadataStore } from './entity-base';
 import { DbModelConfig } from './model-config';
 import { JoinQueryBuilder } from '../query/join-builder';
-import { Condition, ConditionBuilder, SqlFragment } from '../query/conditions';
+import { Condition, ConditionBuilder, SqlFragment, UnwrapSelection } from '../query/conditions';
 import { ResolveCollectionResults, CollectionQueryBuilder, ReferenceQueryBuilder, SelectQueryBuilder, QueryBuilder } from '../query/query-builder';
 import { InferRowType } from '../schema/row-type';
 import { DbSchemaManager } from '../migration/db-schema-manager';
@@ -527,11 +527,12 @@ export class TableAccessor<TBuilder extends TableBuilder<any>> {
 
   /**
    * Start a select query with automatic type inference
+   * UnwrapSelection extracts the value types from SqlFragment<T> expressions
    */
   select<TSelection>(
     selector: (row: InferRowType<TBuilder>) => TSelection
-  ): SelectQueryBuilder<TSelection> {
-    return new SelectQueryBuilder(this.schema, this.client, selector as any, undefined, undefined, undefined, undefined, this.executor, undefined, undefined, undefined, this.schemaRegistry, undefined, this.collectionStrategy);
+  ): SelectQueryBuilder<UnwrapSelection<TSelection>> {
+    return new SelectQueryBuilder(this.schema, this.client, selector as any, undefined, undefined, undefined, undefined, this.executor, undefined, undefined, undefined, this.schemaRegistry, undefined, this.collectionStrategy) as SelectQueryBuilder<UnwrapSelection<TSelection>>;
   }
 
   /**
@@ -558,7 +559,7 @@ export class TableAccessor<TBuilder extends TableBuilder<any>> {
     condition: (left: InferRowType<TBuilder>, right: TRight) => Condition,
     selector: (left: InferRowType<TBuilder>, right: TRight) => TSelection,
     alias?: string
-  ): SelectQueryBuilder<TSelection> {
+  ): SelectQueryBuilder<UnwrapSelection<TSelection>> {
     const qb = new QueryBuilder<TableSchema, InferRowType<TBuilder>>(this.schema, this.client, undefined, undefined, undefined, undefined, this.executor, undefined, undefined, this.collectionStrategy);
     return qb.leftJoin(rightTable, condition, selector, alias);
   }
@@ -571,7 +572,7 @@ export class TableAccessor<TBuilder extends TableBuilder<any>> {
     condition: (left: InferRowType<TBuilder>, right: TRight) => Condition,
     selector: (left: InferRowType<TBuilder>, right: TRight) => TSelection,
     alias?: string
-  ): SelectQueryBuilder<TSelection> {
+  ): SelectQueryBuilder<UnwrapSelection<TSelection>> {
     const qb = new QueryBuilder<TableSchema, InferRowType<TBuilder>>(this.schema, this.client, undefined, undefined, undefined, undefined, this.executor, undefined, undefined, this.collectionStrategy);
     return qb.innerJoin(rightTable, condition, selector, alias);
   }
@@ -1281,16 +1282,16 @@ export interface EntityCollectionQueryWithSelect<TEntity extends DbEntity, TSele
 
 /**
  * Strongly-typed query builder for entities
- * Results automatically unwrap DbColumn<T> to T
+ * Results automatically unwrap DbColumn<T> to T and SqlFragment<T> to T
  */
 export interface EntitySelectQueryBuilder<TEntity extends DbEntity, TSelection> {
   select<TNewSelection>(
     selector: (entity: TSelection extends DbEntity ? EntityQuery<TSelection> : TSelection) => TNewSelection
-  ): EntitySelectQueryBuilder<TEntity, TNewSelection>;
+  ): EntitySelectQueryBuilder<TEntity, UnwrapSelection<TNewSelection>>;
 
   selectDistinct<TNewSelection>(
     selector: (entity: TSelection extends DbEntity ? EntityQuery<TSelection> : TSelection) => TNewSelection
-  ): EntitySelectQueryBuilder<TEntity, TNewSelection>;
+  ): EntitySelectQueryBuilder<TEntity, UnwrapSelection<TNewSelection>>;
 
   where(
     condition: (entity: TSelection extends DbEntity ? EntityQuery<TSelection> : TSelection) => any
@@ -1317,14 +1318,14 @@ export interface EntitySelectQueryBuilder<TEntity extends DbEntity, TSelection> 
     condition: (left: TSelection extends DbEntity ? EntityQuery<TSelection> : TSelection, right: TRight extends DbEntity ? (EntityQuery<TRight> | TRight) : TRight) => Condition,
     selector: (left: TSelection extends DbEntity ? EntityQuery<TSelection> : TSelection, right: TRight extends DbEntity ? (EntityQuery<TRight> | TRight) : TRight) => TNewSelection,
     alias?: string
-  ): EntitySelectQueryBuilder<TEntity, TNewSelection>;
+  ): EntitySelectQueryBuilder<TEntity, UnwrapSelection<TNewSelection>>;
 
   innerJoin<TRight extends DbEntity | Record<string, any>, TNewSelection>(
     rightTable: DbEntityTable<TRight extends DbEntity ? TRight : never> | import('../query/subquery').Subquery<TRight, 'table'> | import('../query/cte-builder').DbCte<TRight>,
     condition: (left: TSelection extends DbEntity ? EntityQuery<TSelection> : TSelection, right: TRight extends DbEntity ? (EntityQuery<TRight> | TRight) : TRight) => Condition,
     selector: (left: TSelection extends DbEntity ? EntityQuery<TSelection> : TSelection, right: TRight extends DbEntity ? (EntityQuery<TRight> | TRight) : TRight) => TNewSelection,
     alias?: string
-  ): EntitySelectQueryBuilder<TEntity, TNewSelection>;
+  ): EntitySelectQueryBuilder<TEntity, UnwrapSelection<TNewSelection>>;
 
   // Grouping
   groupBy<TGroupingKey>(
@@ -1625,12 +1626,13 @@ export class DbEntityTable<TEntity extends DbEntity> {
 
   /**
    * Select query
+   * UnwrapSelection extracts the value types from SqlFragment<T> expressions
    */
   select<TSelection>(
     selector: (entity: EntityQuery<TEntity>) => TSelection
-  ): EntitySelectQueryBuilder<TEntity, TSelection> {
+  ): EntitySelectQueryBuilder<TEntity, UnwrapSelection<TSelection>> {
     const queryBuilder = this.context.getTable(this.tableName).select(selector as any);
-    return queryBuilder as any as EntitySelectQueryBuilder<TEntity, TSelection>;
+    return queryBuilder as any as EntitySelectQueryBuilder<TEntity, UnwrapSelection<TSelection>>;
   }
 
   /**

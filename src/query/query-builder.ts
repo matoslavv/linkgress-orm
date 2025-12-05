@@ -1,4 +1,4 @@
-import { Condition, ConditionBuilder, SqlFragment, SqlBuildContext, FieldRef } from './conditions';
+import { Condition, ConditionBuilder, SqlFragment, SqlBuildContext, FieldRef, UnwrapSelection } from './conditions';
 import { TableSchema } from '../schema/table-builder';
 import type { QueryExecutor, CollectionStrategyType } from '../entity/db-context';
 import type { DatabaseClient, QueryResult } from '../database/database-client.interface';
@@ -91,8 +91,9 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
 
   /**
    * Define the selection with support for nested queries
+   * UnwrapSelection extracts the value types from SqlFragment<T> expressions
    */
-  select<TSelection>(selector: (row: TRow) => TSelection): SelectQueryBuilder<TSelection> {
+  select<TSelection>(selector: (row: TRow) => TSelection): SelectQueryBuilder<UnwrapSelection<TSelection>> {
     return new SelectQueryBuilder(
       this.schema,
       this.client,
@@ -227,13 +228,14 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
 
   /**
    * Add a LEFT JOIN to the query with a selector (supports both tables and subqueries)
+   * UnwrapSelection extracts the value types from SqlFragment<T> expressions
    */
   leftJoin<TRight, TSelection>(
     rightTable: { _getSchema: () => TableSchema } | Subquery<TRight, 'table'>,
     condition: (left: TRow, right: TRight) => Condition,
     selector: (left: TRow, right: TRight) => TSelection,
     alias?: string
-  ): SelectQueryBuilder<TSelection> {
+  ): SelectQueryBuilder<UnwrapSelection<TSelection>> {
     // Check if rightTable is a Subquery
     if (rightTable instanceof Subquery) {
       if (!alias) {
@@ -306,18 +308,19 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
       undefined,  // schemaRegistry
       [],  // ctes
       this.collectionStrategy
-    );
+    ) as SelectQueryBuilder<UnwrapSelection<TSelection>>;
   }
 
   /**
    * Add an INNER JOIN to the query with a selector (supports both tables and subqueries)
+   * UnwrapSelection extracts the value types from SqlFragment<T> expressions
    */
   innerJoin<TRight, TSelection>(
     rightTable: { _getSchema: () => TableSchema } | Subquery<TRight, 'table'>,
     condition: (left: TRow, right: TRight) => Condition,
     selector: (left: TRow, right: TRight) => TSelection,
     alias?: string
-  ): SelectQueryBuilder<TSelection> {
+  ): SelectQueryBuilder<UnwrapSelection<TSelection>> {
     // Check if rightTable is a Subquery
     if (rightTable instanceof Subquery) {
       if (!alias) {
@@ -390,7 +393,7 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
       undefined,  // schemaRegistry
       [],  // ctes
       this.collectionStrategy
-    );
+    ) as SelectQueryBuilder<UnwrapSelection<TSelection>>;
   }
 
   /**
@@ -594,8 +597,9 @@ export class SelectQueryBuilder<TSelection> {
 
   /**
    * Transform the selection with a new selector
+   * UnwrapSelection extracts the value types from SqlFragment<T> expressions
    */
-  select<TNewSelection>(selector: (row: TSelection) => TNewSelection): SelectQueryBuilder<TNewSelection> {
+  select<TNewSelection>(selector: (row: TSelection) => TNewSelection): SelectQueryBuilder<UnwrapSelection<TNewSelection>> {
     // Create a composed selector that applies both transformations
     const composedSelector = (row: any) => {
       const firstResult = this.selector(row);
@@ -617,7 +621,7 @@ export class SelectQueryBuilder<TSelection> {
       this.schemaRegistry,
       this.ctes,
       this.collectionStrategy
-    );
+    ) as SelectQueryBuilder<UnwrapSelection<TNewSelection>>;
   }
 
   /**
@@ -754,7 +758,7 @@ export class SelectQueryBuilder<TSelection> {
     alias: string,
     condition: (left: TSelection, right: TSubqueryResult) => Condition,
     selector: (left: TSelection, right: TSubqueryResult) => TNewSelection
-  ): SelectQueryBuilder<TNewSelection> {
+  ): SelectQueryBuilder<UnwrapSelection<TNewSelection>> {
     const newJoinCounter = this.joinCounter + 1;
 
     // Create mock for the current selection (left side)
@@ -801,19 +805,20 @@ export class SelectQueryBuilder<TSelection> {
       this.schemaRegistry,
       this.ctes,
       this.collectionStrategy
-    );
+    ) as SelectQueryBuilder<UnwrapSelection<TNewSelection>>;
   }
 
   /**
    * Add a LEFT JOIN to the query with a selector
    * Note: After select(), the left parameter in the join will be the selected shape (TSelection)
+   * UnwrapSelection extracts the value types from SqlFragment<T> expressions
    */
   leftJoin<TRight extends Record<string, any>, TNewSelection>(
     rightTable: { _getSchema: () => TableSchema } | Subquery<TRight, 'table'> | DbCte<TRight>,
     condition: (left: TSelection, right: TRight) => Condition,
     selector: (left: TSelection, right: TRight) => TNewSelection,
     alias?: string
-  ): SelectQueryBuilder<TNewSelection> {
+  ): SelectQueryBuilder<UnwrapSelection<TNewSelection>> {
     // Check if rightTable is a CTE
     if (isCte(rightTable)) {
       return this.leftJoinCte(rightTable, condition, selector);
@@ -878,7 +883,7 @@ export class SelectQueryBuilder<TSelection> {
       this.schemaRegistry,
       this.ctes,
       this.collectionStrategy
-    );
+    ) as SelectQueryBuilder<UnwrapSelection<TNewSelection>>;
   }
 
   /**
@@ -888,7 +893,7 @@ export class SelectQueryBuilder<TSelection> {
     cte: DbCte<TRight>,
     condition: (left: TSelection, right: TRight) => Condition,
     selector: (left: TSelection, right: TRight) => TNewSelection
-  ): SelectQueryBuilder<TNewSelection> {
+  ): SelectQueryBuilder<UnwrapSelection<TNewSelection>> {
     const newJoinCounter = this.joinCounter + 1;
 
     // Create mock for the current selection (left side)
@@ -933,7 +938,7 @@ export class SelectQueryBuilder<TSelection> {
       this.schemaRegistry,
       this.ctes,
       this.collectionStrategy
-    );
+    ) as SelectQueryBuilder<UnwrapSelection<TNewSelection>>;
   }
 
   /**
@@ -948,7 +953,7 @@ export class SelectQueryBuilder<TSelection> {
     alias: string,
     condition: (left: TSelection, right: TSubqueryResult) => Condition,
     selector: (left: TSelection, right: TSubqueryResult) => TNewSelection
-  ): SelectQueryBuilder<TNewSelection> {
+  ): SelectQueryBuilder<UnwrapSelection<TNewSelection>> {
     const newJoinCounter = this.joinCounter + 1;
 
     // Create mock for the current selection (left side)
@@ -994,19 +999,20 @@ export class SelectQueryBuilder<TSelection> {
       this.schemaRegistry,
       this.ctes,
       this.collectionStrategy
-    );
+    ) as SelectQueryBuilder<UnwrapSelection<TNewSelection>>;
   }
 
   /**
    * Add an INNER JOIN to the query with a selector
    * Note: After select(), the left parameter in the join will be the selected shape (TSelection)
+   * UnwrapSelection extracts the value types from SqlFragment<T> expressions
    */
   innerJoin<TRight, TNewSelection>(
     rightTable: { _getSchema: () => TableSchema } | Subquery<TRight, 'table'>,
     condition: (left: TSelection, right: TRight) => Condition,
     selector: (left: TSelection, right: TRight) => TNewSelection,
     alias?: string
-  ): SelectQueryBuilder<TNewSelection> {
+  ): SelectQueryBuilder<UnwrapSelection<TNewSelection>> {
     // Check if rightTable is a Subquery
     if (rightTable instanceof Subquery) {
       if (!alias) {
@@ -1061,7 +1067,7 @@ export class SelectQueryBuilder<TSelection> {
       this.schemaRegistry,
       this.ctes,
       this.collectionStrategy
-    );
+    ) as SelectQueryBuilder<UnwrapSelection<TNewSelection>>;
   }
 
   /**

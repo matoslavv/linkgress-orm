@@ -852,11 +852,11 @@ describe('Subquery Operations', () => {
 
         // Alice has 2 posts, total views = 100 + 150 = 250
         expect(aliceResult?.postStats).toBeDefined();
-        expect(aliceResult?.postStats?.length).toBeGreaterThan(0);
+        expect((aliceResult?.postStats as any[])?.length).toBeGreaterThan(0);
 
         // Bob has 1 post, total views = 200
         expect(bobResult?.postStats).toBeDefined();
-        expect(bobResult?.postStats?.length).toBeGreaterThan(0);
+        expect((bobResult?.postStats as any[])?.length).toBeGreaterThan(0);
       });
     });
 
@@ -886,7 +886,7 @@ describe('Subquery Operations', () => {
           .toList();
 
         expect(result.length).toBeGreaterThan(0);
-        result.forEach(r => {
+        result.forEach((r: any) => {
           expect(r).toHaveProperty('id');
           expect(r).toHaveProperty('titleUpper');
           expect(r).toHaveProperty('age');
@@ -896,7 +896,7 @@ describe('Subquery Operations', () => {
 
         // Verify ordering by titleUpper (last orderBy takes precedence)
         for (let i = 0; i < result.length - 1; i++) {
-          expect(result[i].titleUpper <= result[i + 1].titleUpper).toBe(true);
+          expect((result[i] as any).titleUpper <= (result[i + 1] as any).titleUpper).toBe(true);
         }
       });
     });
@@ -1382,7 +1382,7 @@ describe('Subquery Operations', () => {
           .toList();
 
         expect(result.length).toBeGreaterThan(0);
-        result.forEach((r) => {
+        result.forEach((r: any) => {
           expect(r).toHaveProperty('postId');
           expect(r).toHaveProperty('title');
           expect(r).toHaveProperty('category');
@@ -1610,7 +1610,7 @@ describe('Subquery Operations', () => {
             .asSubquery('table')
         );
 
-        const hasCompletedOrdersFilter = (user) => exists(
+        const hasCompletedOrdersFilter = (user: any) => exists(
           db.orders
             .where(o => and(
               eq(o.userId, user.id),
@@ -2040,6 +2040,9 @@ describe('Subquery Operations', () => {
 
         expect(result.length).toBeGreaterThan(0);
         result.forEach((r) => {
+          // Type inference tests - these will fail at compile time if types are wrong
+          expect(r.finalUserId != 999999).toBe(true); // number type check
+          expect(r.summary != 'impossible_string_match_xyz').toBe(true); // string (from sql<string>) type check
           expect(r).toHaveProperty('finalUserId');
           expect(r).toHaveProperty('finalUserName');
           expect(r).toHaveProperty('finalDisplayName');
@@ -2209,6 +2212,7 @@ describe('Subquery Operations', () => {
 
         expect(result.length).toBeGreaterThan(0);
         result.forEach((r) => {
+          expect(r.nameLen != 345345345).toBe(true);
           expect(r).toHaveProperty('userId');
           expect(r).toHaveProperty('userName');
           expect(r).toHaveProperty('userAge');
@@ -2372,6 +2376,10 @@ describe('Subquery Operations', () => {
 
         expect(result.length).toBeGreaterThan(0);
         result.forEach((r) => {
+          // Type inference tests - these will fail at compile time if types are wrong
+          expect(r.finalUserId != 999999).toBe(true); // number type check
+          expect(r.finalUserAge != 999999).toBe(true); // number (from navigation through 3 levels) type check
+          expect(r.megaSummary != 'impossible_string_match_xyz').toBe(true); // string (from sql<string>) type check
           expect(r).toHaveProperty('finalUserId');
           expect(r).toHaveProperty('finalUserName');
           expect(r).toHaveProperty('finalUserEmail');
