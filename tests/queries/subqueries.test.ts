@@ -743,5 +743,118 @@ describe('Subquery Operations', () => {
         expect(result.length).toBe(3); // Alice's 2 posts + Bob's 1 post
       });
     });
+
+    test('should handle complex CTE with navigation property in filter used by grouped query with leftJoin', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // This test replicates a complex real-world scenario:
+        // 1. Filter built dynamically using subquery that accesses navigation properties
+        // 2. 1st CTE that aggregates order data
+        // 3. 2nd CTE that: uses groupBy, applies filter from #1, performs leftJoin with CTE1
+        // 4. Final query that selects using these CTEs
+
+        // Step 1: Create a dynamic filter with EXISTS subquery that accesses navigation property
+        // This filter checks if a post's user has any orders
+        const hasOrdersFilter = (post: any) => exists(
+          db.orders
+            .where(o => and(
+              eq(o.userId, post.userId),
+              // Access navigation property from outer query - this is the key test!
+              // This should trigger a JOIN on users table in the outer query
+              sql`${post.user!.age} >= 25`
+            ))
+            .select(o => ({ orderId: o.id }))
+            .asSubquery('table')
+        );
+
+        const cteBuilder = new DbCteBuilder();
+
+        // Step 2: 1st CTE - aggregate order amounts by user
+        const orderStatsCte = cteBuilder.withAggregation(
+          'order_stats_cte',
+          db.orders.select(o => ({
+            userId: o.userId,
+            orderAmount: o.totalAmount,
+            orderStatus: o.status,
+          })),
+          o => ({ userId: o.userId }),
+          'orderDetails'
+        );
+
+        // Step 3: 2nd CTE - groupBy with filter using navigation properties, leftJoin with CTE1
+        // This is the critical part - using the hasOrdersFilter inside a CTE that:
+        // - Applies WHERE with navigation property access (via exists subquery)
+        // - Does groupBy
+        // - LeftJoins with another CTE
+        const postStatsCte = cteBuilder.withAggregation(
+          'post_stats_cte',
+          db.posts
+            .where(post => hasOrdersFilter(post))  // Filter with navigation property access
+            .select(p => ({
+              postId: p.id,
+              title: p.title,
+              userId: p.userId,
+              views: p.views,
+            }))
+            .groupBy(p => ({
+              userId: p.userId,
+            }))
+            .select(g => ({
+              userId: g.key.userId,
+              postCount: g.count(),
+              totalViews: g.sum(p => p.views),
+            }))
+            .leftJoin(
+              orderStatsCte,
+              (stats, orders) => eq(stats.userId, orders.userId),
+              (stats, orders) => ({
+                userId: stats.userId,
+                postCount: stats.postCount,
+                totalViews: stats.totalViews,
+                orderDetails: orders.orderDetails,
+              })
+            ),
+          p => ({ userId: p.userId }),
+          'postStats'
+        );
+
+        // Step 4: Final query using the CTEs
+        const result = await db.users
+          .where((u: any) => eq(u.isActive, true))
+          .with(orderStatsCte)
+          .with(postStatsCte)
+          .leftJoin(
+            postStatsCte,
+            (user: any, stats: any) => eq(user.id, stats.userId),
+            (user: any, stats: any) => ({
+              username: user.username,
+              age: user.age,
+              postStats: stats.postStats,
+            })
+          )
+          .toList();
+
+        // Verify results:
+        // - Alice (age 25) has posts and orders, so should be included with stats
+        // - Bob (age 35) has posts and orders, so should be included with stats
+        // - Charlie (age 45) is not active, so filtered out
+        expect(result.length).toBe(2);
+
+        const aliceResult = result.find((r: any) => r.username === 'alice');
+        const bobResult = result.find((r: any) => r.username === 'bob');
+
+        expect(aliceResult).toBeDefined();
+        expect(bobResult).toBeDefined();
+
+        // Alice has 2 posts, total views = 100 + 150 = 250
+        expect(aliceResult?.postStats).toBeDefined();
+        expect(aliceResult?.postStats?.length).toBeGreaterThan(0);
+
+        // Bob has 1 post, total views = 200
+        expect(bobResult?.postStats).toBeDefined();
+        expect(bobResult?.postStats?.length).toBeGreaterThan(0);
+      });
+    });
   });
 });

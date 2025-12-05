@@ -781,8 +781,28 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
       }
     }
 
+    // Detect navigation property references in WHERE and add JOINs
+    const navigationJoins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean }> = [];
+    this.detectAndAddJoinsFromCondition(this.whereCond, navigationJoins);
+
     // Build FROM clause with JOINs
     let fromClause = `FROM "${this.schema.name}"`;
+
+    // Add navigation property JOINs first
+    for (const navJoin of navigationJoins) {
+      const joinType = navJoin.isMandatory ? 'INNER JOIN' : 'LEFT JOIN';
+      const targetTableName = navJoin.targetSchema
+        ? `"${navJoin.targetSchema}"."${navJoin.targetTable}"`
+        : `"${navJoin.targetTable}"`;
+
+      // Build join condition: source.foreignKey = target.match
+      const joinConditions = navJoin.foreignKeys.map((fk, i) => {
+        const targetCol = navJoin.matches[i] || 'id';
+        return `"${this.schema.name}"."${fk}" = "${navJoin.alias}"."${targetCol}"`;
+      });
+
+      fromClause += `\n${joinType} ${targetTableName} AS "${navJoin.alias}" ON ${joinConditions.join(' AND ')}`;
+    }
 
     // Add manual JOINs
     for (const manualJoin of this.manualJoins) {
@@ -925,6 +945,50 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
         return createAggregateFieldRef<number>('AVG', selector) as any;
       },
     };
+  }
+
+  /**
+   * Detect navigation property references in a WHERE condition and add necessary JOINs
+   */
+  private detectAndAddJoinsFromCondition(
+    condition: Condition | undefined,
+    joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean }>
+  ): void {
+    if (!condition) {
+      return;
+    }
+
+    // Get all field references from the condition
+    const fieldRefs = condition.getFieldRefs();
+
+    for (const fieldRef of fieldRefs) {
+      if ('__tableAlias' in fieldRef && fieldRef.__tableAlias) {
+        const tableAlias = fieldRef.__tableAlias as string;
+        // Check if this references a related table that isn't already joined
+        if (tableAlias !== this.schema.name && !joins.some(j => j.alias === tableAlias)) {
+          // Find the relation config for this navigation
+          const relation = this.schema.relations[tableAlias];
+          if (relation && relation.type === 'one') {
+            // Get target schema from targetTableBuilder if available
+            let targetSchema: string | undefined;
+            if (relation.targetTableBuilder) {
+              const targetTableSchema = relation.targetTableBuilder.build();
+              targetSchema = targetTableSchema.schema;
+            }
+
+            // Add a JOIN for this reference
+            joins.push({
+              alias: tableAlias,
+              targetTable: relation.targetTable,
+              targetSchema,
+              foreignKeys: relation.foreignKeys || [relation.foreignKey || ''],
+              matches: relation.matches || [],
+              isMandatory: relation.isMandatory ?? false,
+            });
+          }
+        }
+      }
+    }
   }
 
   /**
