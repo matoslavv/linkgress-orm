@@ -415,6 +415,11 @@ describe('withQueryOptions Method', () => {
           .toList();
 
         expect(results.length).toBe(2); // alice and bob are active
+        results.forEach(r => {
+          // Type assertions
+          assertType<number, typeof r.id>(r.id);
+          assertType<string, typeof r.username>(r.username);
+        });
       });
     });
 
@@ -434,6 +439,13 @@ describe('withQueryOptions Method', () => {
           .toList();
 
         expect(results.length).toBe(2); // alice and bob
+        results.forEach(r => {
+          // Type assertions
+          assertType<number, typeof r.id>(r.id);
+          assertType<string, typeof r.username>(r.username);
+          assertType<boolean, typeof r.isActive>(r.isActive);
+          assertType<{ title: string | undefined }[], typeof r.posts>(r.posts);
+        });
         const alice = results.find(u => u.username === 'alice');
         expect(alice?.posts.length).toBe(2);
       });
@@ -453,6 +465,12 @@ describe('withQueryOptions Method', () => {
           .orderBy(u => u.username)
           .toList();
 
+        results.forEach(r => {
+          // Type assertions
+          assertType<number, typeof r.id>(r.id);
+          assertType<string, typeof r.username>(r.username);
+          assertType<{ title: string | undefined }[], typeof r.posts>(r.posts);
+        });
         expect(results[0].username).toBe('alice');
         expect(results[1].username).toBe('bob');
         expect(results[2].username).toBe('charlie');
@@ -475,6 +493,12 @@ describe('withQueryOptions Method', () => {
           .toList();
 
         expect(results.length).toBe(2);
+        results.forEach(r => {
+          // Type assertions
+          assertType<number, typeof r.id>(r.id);
+          assertType<string, typeof r.username>(r.username);
+          assertType<{ title: string | undefined }[], typeof r.posts>(r.posts);
+        });
       });
     });
 
@@ -492,6 +516,10 @@ describe('withQueryOptions Method', () => {
           .where(u => eq(u.username!, 'alice'))
           .first();
 
+        // Type assertions
+        assertType<number, typeof result.id>(result.id);
+        assertType<string, typeof result.username>(result.username);
+        assertType<{ title: string | undefined }[], typeof result.posts>(result.posts);
         expect(result.username).toBe('alice');
         expect(result.posts.length).toBe(2);
       });
@@ -507,6 +535,8 @@ describe('withQueryOptions Method', () => {
           .select(u => ({ id: u.id }))
           .count();
 
+        // Type assertion
+        assertType<number, typeof count>(count);
         expect(count).toBe(2);
       });
     });
@@ -532,6 +562,13 @@ describe('withQueryOptions Method', () => {
           }))
           .toList();
 
+        results.forEach(r => {
+          // Type assertions
+          assertType<number, typeof r.userId>(r.userId);
+          assertType<string, typeof r.username>(r.username);
+          assertType<{ title: string | undefined; views: number }[], typeof r.highViewPosts>(r.highViewPosts);
+          assertType<{ title: string | undefined }[], typeof r.allPosts>(r.allPosts);
+        });
         const alice = results.find(u => u.username === 'alice');
         expect(alice?.highViewPosts.length).toBe(1);
         expect(alice?.allPosts.length).toBe(2);
@@ -560,6 +597,13 @@ describe('withQueryOptions Method', () => {
           }))
           .toList();
 
+        results.forEach(r => {
+          // Type assertions
+          assertType<number, typeof r.userId>(r.userId);
+          assertType<string, typeof r.username>(r.username);
+          assertType<{ title: string | undefined; views: number }[], typeof r.topPosts>(r.topPosts);
+          assertType<{ title: string | undefined; id: number }[], typeof r.oldestPosts>(r.oldestPosts);
+        });
         const alice = results.find(u => u.username === 'alice');
         expect(alice).toBeDefined();
         expect(alice?.topPosts).toBeDefined();
@@ -585,6 +629,12 @@ describe('withQueryOptions Method', () => {
           }))
           .toList();
 
+        results.forEach(r => {
+          // Type assertions
+          assertType<number, typeof r.userId>(r.userId);
+          assertType<string, typeof r.username>(r.username);
+          assertType<{ title: string | undefined; views: number }[], typeof r.secondPost>(r.secondPost);
+        });
         const alice = results.find(u => u.username === 'alice');
         // Offset and limit behavior may vary, just check it doesn't error
         expect(alice?.secondPost).toBeDefined();
@@ -624,6 +674,18 @@ describe('withQueryOptions Method', () => {
               .toList('posts'),
           }))
           .toList();
+
+        // Type assertions for both result sets
+        jsonbResults.forEach(r => {
+          assertType<number, typeof r.userId>(r.userId);
+          assertType<string, typeof r.username>(r.username);
+          assertType<{ title: string | undefined; views: number }[], typeof r.posts>(r.posts);
+        });
+        tempTableResults.forEach(r => {
+          assertType<number, typeof r.userId>(r.userId);
+          assertType<string, typeof r.username>(r.username);
+          assertType<{ title: string | undefined; views: number }[], typeof r.posts>(r.posts);
+        });
 
         // Sort results by username for comparison
         jsonbResults.sort((a, b) => a.username.localeCompare(b.username));
@@ -677,6 +739,14 @@ describe('withQueryOptions Method', () => {
             minViews: u.posts!.min(p => p.views!),
           }))
           .toList();
+
+        results.forEach(r => {
+          // Type assertions
+          assertType<number, typeof r.userId>(r.userId);
+          assertType<string, typeof r.username>(r.username);
+          assertType<number | null, typeof r.maxViews>(r.maxViews);
+          assertType<number | null, typeof r.minViews>(r.minViews);
+        });
 
         const charlie = results.find(u => u.username === 'charlie');
         expect(charlie?.maxViews).toBeNull();

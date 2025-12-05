@@ -359,6 +359,8 @@ describe('Basic Query Operations', () => {
 
         const count = await db.users.count();
 
+        // Type assertion
+        assertType<number, typeof count>(count);
         expect(count).toBe(3);
       });
     });
@@ -371,6 +373,8 @@ describe('Basic Query Operations', () => {
           .where(u => eq(u.isActive, true))
           .count();
 
+        // Type assertion
+        assertType<number, typeof count>(count);
         expect(count).toBe(2);
       });
     });

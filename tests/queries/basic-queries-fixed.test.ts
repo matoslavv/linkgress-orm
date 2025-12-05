@@ -278,6 +278,8 @@ describe('Basic Query Operations (Fixed)', () => {
 
         const count = await db.users.count();
 
+        // Type assertion
+        assertType<number, typeof count>(count);
         expect(count).toBe(3);
       });
     });
@@ -290,6 +292,8 @@ describe('Basic Query Operations (Fixed)', () => {
           .where(u => eq(u.isActive, true))
           .count();
 
+        // Type assertion
+        assertType<number, typeof count>(count);
         expect(count).toBe(2);
       });
     });
@@ -302,6 +306,8 @@ describe('Basic Query Operations (Fixed)', () => {
           id: p.id
         })).where(p => gt(p.id, -1)).count();
 
+        // Type assertion
+        assertType<number, typeof count>(count);
         expect(count).toBe(3);
       });
     });

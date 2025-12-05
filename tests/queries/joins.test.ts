@@ -179,6 +179,9 @@ describe('JOIN Operations', () => {
 
         expect(result.length).toBeGreaterThan(0);
         result.forEach(r => {
+          // Type assertions
+          assertType<string, typeof r.postTitle>(r.postTitle);
+          assertType<string, typeof r.userName>(r.userName);
           expect(r).toHaveProperty('postTitle');
           expect(r).toHaveProperty('userName');
         });
@@ -220,6 +223,10 @@ describe('JOIN Operations', () => {
         expect(result.length).toBeGreaterThan(0);
 
         result.forEach(r => {
+          // Type assertions
+          assertType<string, typeof r.username>(r.username);
+          assertType<number, typeof r.totalViews>(r.totalViews);
+          assertType<number, typeof r.postCount>(r.postCount);
           expect(typeof r.totalViews).toBe('number');
           expect(typeof r.postCount).toBe('number');
         });
@@ -258,6 +265,11 @@ describe('JOIN Operations', () => {
 
         // Self join should produce results
         expect(result.length).toBeGreaterThan(0);
+        result.forEach(r => {
+          // Type assertions
+          assertType<string, typeof r.user1>(r.user1);
+          assertType<string, typeof r.user2Email>(r.user2Email);
+        });
       });
     });
 
@@ -280,6 +292,10 @@ describe('JOIN Operations', () => {
 
         expect(result.length).toBeGreaterThan(0);
         result.forEach(r => {
+          // Type assertions
+          assertType<string, typeof r.username>(r.username);
+          assertType<string, typeof r.postTitle>(r.postTitle);
+          assertType<number, typeof r.views>(r.views);
           expect(r.views).toBeGreaterThan(100);
         });
       });
@@ -304,6 +320,12 @@ describe('JOIN Operations', () => {
           .toList();
 
         expect(result).toHaveLength(2);
+        result.forEach(r => {
+          // Type assertions
+          assertType<string, typeof r.username>(r.username);
+          assertType<string, typeof r.postTitle>(r.postTitle);
+          assertType<number, typeof r.views>(r.views);
+        });
         expect(result[0].views).toBeGreaterThanOrEqual(result[1].views);
       });
     });

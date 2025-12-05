@@ -311,6 +311,9 @@ describe('Advanced Navigation Properties', () => {
 
         expect(usersWithDistinctTitles.length).toBe(1);
         const alice = usersWithDistinctTitles[0];
+        // Type assertions
+        assertType<string, typeof alice.username>(alice.username);
+        assertType<string[], typeof alice.distinctTitles>(alice.distinctTitles);
 
         // Check that Common Title appears only once
         const commonTitleCount = alice.distinctTitles.filter(t => t === 'Common Title').length;
@@ -345,6 +348,10 @@ describe('Advanced Navigation Properties', () => {
 
         expect(usersWithPagedPosts.length).toBe(1);
         const alice = usersWithPagedPosts[0];
+        // Type assertions
+        assertType<string, typeof alice.username>(alice.username);
+        assertType<{ id: number; title: string }[], typeof alice.firstPost>(alice.firstPost);
+        assertType<{ id: number; title: string }[], typeof alice.secondPost>(alice.secondPost);
 
         if (alice.firstPost.length > 0 && alice.secondPost.length > 0) {
           expect(alice.firstPost[0].id).not.toBe(alice.secondPost[0].id);
@@ -366,6 +373,12 @@ describe('Advanced Navigation Properties', () => {
           }))
           .toList();
 
+        // Type assertions
+        usersWithPostCounts.forEach(u => {
+          assertType<string, typeof u.username>(u.username);
+          assertType<number, typeof u.postCount>(u.postCount);
+        });
+
         // Filter in application for users with more than 1 post
         const usersWithMultiplePosts = usersWithPostCounts.filter(u => (u.postCount) > 1);
 
@@ -385,6 +398,12 @@ describe('Advanced Navigation Properties', () => {
             maxViews: u.posts!.max(p => p.views),
           }))
           .toList();
+
+        // Type assertions
+        usersWithMaxViews.forEach(u => {
+          assertType<string, typeof u.username>(u.username);
+          assertType<number | null, typeof u.maxViews>(u.maxViews);
+        });
 
         // Filter for users with popular posts
         const usersWithPopularPosts = usersWithMaxViews.filter(u => u.maxViews !== null && (u.maxViews) > 100);
@@ -501,6 +520,9 @@ describe('Advanced Navigation Properties', () => {
 
         expect(usersWithFilteredPosts.length).toBeGreaterThan(0);
         usersWithFilteredPosts.forEach(user => {
+          // Type assertions
+          assertType<string, typeof user.username>(user.username);
+          assertType<{ title: string; views: number }[], typeof user.posts>(user.posts);
           user.posts.forEach(post => {
             expect(post.views! * 2).toBeGreaterThan(200);
           });
@@ -615,6 +637,12 @@ describe('Advanced Navigation Properties', () => {
           }))
           .toList();
 
+        // Type assertions
+        usersWithPostCount.forEach(u => {
+          assertType<string, typeof u.username>(u.username);
+          assertType<number, typeof u.postCount>(u.postCount);
+        });
+
         // Sort in application by post count descending
         const usersByPostCount = [...usersWithPostCount].sort((a, b) => (b.postCount) - (a.postCount));
 
@@ -654,6 +682,11 @@ describe('Advanced Navigation Properties', () => {
 
         expect(usersWithPosts.length).toBe(1);
         const userWithNoPosts = usersWithPosts[0];
+        // Type assertions
+        assertType<string, typeof userWithNoPosts.username>(userWithNoPosts.username);
+        assertType<number, typeof userWithNoPosts.userId>(userWithNoPosts.userId);
+        assertType<{ title: string }[], typeof userWithNoPosts.posts>(userWithNoPosts.posts);
+        assertType<number, typeof userWithNoPosts.postCount>(userWithNoPosts.postCount);
         expect(userWithNoPosts.posts).toEqual([]);
         expect(userWithNoPosts.postCount).toBe(0);
       });
@@ -683,6 +716,14 @@ describe('Advanced Navigation Properties', () => {
           .first();
 
         expect(usersWithStats).toBeDefined();
+        if (usersWithStats) {
+          // Type assertions
+          assertType<string, typeof usersWithStats.username>(usersWithStats.username);
+          assertType<number, typeof usersWithStats.userId>(usersWithStats.userId);
+          assertType<number | null, typeof usersWithStats.maxViews>(usersWithStats.maxViews);
+          assertType<number | null, typeof usersWithStats.minViews>(usersWithStats.minViews);
+          assertType<number | null, typeof usersWithStats.sumViews>(usersWithStats.sumViews);
+        }
         expect(usersWithStats!.maxViews).toBeNull();
         expect(usersWithStats!.minViews).toBeNull();
         expect(usersWithStats!.sumViews).toBeNull();
@@ -704,6 +745,9 @@ describe('Advanced Navigation Properties', () => {
 
         expect(users.length).toBeGreaterThan(0);
         users.forEach(user => {
+          // Type assertions
+          assertType<string, typeof user.username>(user.username);
+          assertType<string[], typeof user.postTitles>(user.postTitles);
           expect(Array.isArray(user.postTitles)).toBe(true);
         });
       });
@@ -742,6 +786,10 @@ describe('Advanced Navigation Properties', () => {
 
         expect(posts.length).toBeGreaterThan(0);
         posts.forEach(post => {
+          // Type assertions
+          assertType<string, typeof post.title>(post.title);
+          assertType<string, typeof post.authorName>(post.authorName);
+          assertType<string, typeof post.authorEmail>(post.authorEmail);
           expect(post.authorName).toBeDefined();
           expect(post.authorEmail).toBeDefined();
         });
@@ -762,6 +810,10 @@ describe('Advanced Navigation Properties', () => {
 
         expect(users.length).toBeGreaterThan(0);
         users.forEach(user => {
+          // Type assertions
+          assertType<string, typeof user.username>(user.username);
+          assertType<number, typeof user.postCount>(user.postCount);
+          assertType<number, typeof user.orderCount>(user.orderCount);
           expect(typeof (user.postCount)).toBe('number');
           expect(typeof (user.orderCount)).toBe('number');
           expect((user.postCount)).toBeGreaterThanOrEqual(0);
@@ -784,6 +836,12 @@ describe('Advanced Navigation Properties', () => {
               .toList('posts'),
           }))
           .toList();
+
+        // Type assertions
+        users.forEach(u => {
+          assertType<string, typeof u.username>(u.username);
+          assertType<{ title: string; views: number }[], typeof u.posts>(u.posts);
+        });
 
         const userWithMultiplePosts = users.find(u => u.posts.length > 1);
         if (userWithMultiplePosts) {
@@ -810,6 +868,9 @@ describe('Advanced Navigation Properties', () => {
           .toList();
 
         users.forEach(user => {
+          // Type assertions
+          assertType<string, typeof user.username>(user.username);
+          assertType<{ title: string }[], typeof user.firstTwoPosts>(user.firstTwoPosts);
           expect(user.firstTwoPosts.length).toBeLessThanOrEqual(2);
         });
       });
@@ -830,6 +891,13 @@ describe('Advanced Navigation Properties', () => {
               .toList('postsAfterSkip'),
           }))
           .toList();
+
+        // Type assertions
+        users.forEach(u => {
+          assertType<string, typeof u.username>(u.username);
+          assertType<number, typeof u.allPostsCount>(u.allPostsCount);
+          assertType<{ title: string }[], typeof u.postsAfterSkip>(u.postsAfterSkip);
+        });
 
         const userWithManyPosts = users.find(u => (u.allPostsCount) > 2);
         if (userWithManyPosts) {
@@ -855,6 +923,9 @@ describe('Advanced Navigation Properties', () => {
         expect(posts.length).toBeGreaterThan(0);
         // All posts should have authors in our test data
         posts.forEach(post => {
+          // Type assertions
+          assertType<string, typeof post.title>(post.title);
+          assertType<string, typeof post.authorName>(post.authorName);
           expect(post.authorName).toBeDefined();
         });
       });
@@ -874,6 +945,12 @@ describe('Advanced Navigation Properties', () => {
           .toList();
 
         expect(orders.length).toBeGreaterThan(0);
+        // Type assertions
+        orders.forEach(o => {
+          assertType<string, typeof o.status>(o.status);
+          assertType<boolean, typeof o.customerActive>(o.customerActive);
+          assertType<string, typeof o.customerName>(o.customerName);
+        });
         // Filter in application code since WHERE on reference navigation has issues
         const activeCustomerOrders = orders.filter(o => o.customerActive === true);
         expect(activeCustomerOrders.length).toBeGreaterThan(0);
@@ -896,6 +973,9 @@ describe('Advanced Navigation Properties', () => {
           .toList();
 
         posts.forEach(post => {
+          // Type assertions
+          assertType<string, typeof post.title>(post.title);
+          assertType<string, typeof post.author>(post.author);
           expect(post.author.toLowerCase()).toContain('alice');
         });
       });
@@ -918,6 +998,11 @@ describe('Advanced Navigation Properties', () => {
           .toList();
 
         expect(users.length).toBeGreaterThan(0);
+        users.forEach(u => {
+          // Type assertions
+          assertType<string, typeof u.username>(u.username);
+          assertType<{ title: string; views: number }[], typeof u.importantPosts>(u.importantPosts);
+        });
       });
     });
 
@@ -936,6 +1021,11 @@ describe('Advanced Navigation Properties', () => {
           .toList();
 
         expect(users.length).toBeGreaterThan(0);
+        users.forEach(u => {
+          // Type assertions
+          assertType<string, typeof u.username>(u.username);
+          assertType<{ title: string; views: number }[], typeof u.specificPosts>(u.specificPosts);
+        });
       });
     });
 
@@ -955,6 +1045,9 @@ describe('Advanced Navigation Properties', () => {
 
         expect(users.length).toBeGreaterThan(0);
         users.forEach(user => {
+          // Type assertions
+          assertType<string, typeof user.username>(user.username);
+          assertType<{ title: string; views: number }[], typeof user.filteredPosts>(user.filteredPosts);
           user.filteredPosts.forEach(post => {
             expect(post.views).toBeGreaterThan(10);
           });
@@ -977,6 +1070,9 @@ describe('Advanced Navigation Properties', () => {
 
         expect(users.length).toBeGreaterThan(0);
         users.forEach(user => {
+          // Type assertions
+          assertType<string, typeof user.username>(user.username);
+          assertType<number | null, typeof user.totalViews>(user.totalViews);
           const total = user.totalViews;
           if (total !== null) {
             expect(typeof total).toBe('number');
@@ -1000,6 +1096,10 @@ describe('Advanced Navigation Properties', () => {
 
         expect(users.length).toBeGreaterThan(0);
         users.forEach(user => {
+          // Type assertions
+          assertType<string, typeof user.username>(user.username);
+          assertType<number | null, typeof user.maxViews>(user.maxViews);
+          assertType<number, typeof user.postCount>(user.postCount);
           const count = user.postCount;
           if (count > 0) {
             expect(user.maxViews).not.toBeNull();
@@ -1023,6 +1123,10 @@ describe('Advanced Navigation Properties', () => {
 
         expect(users.length).toBeGreaterThan(0);
         users.forEach(user => {
+          // Type assertions
+          assertType<string, typeof user.username>(user.username);
+          assertType<number | null, typeof user.minViews>(user.minViews);
+          assertType<number, typeof user.postCount>(user.postCount);
           const count = user.postCount;
           if (count > 0) {
             expect(user.minViews).not.toBeNull();
@@ -1074,6 +1178,10 @@ describe('Advanced Navigation Properties', () => {
 
         expect(orders.length).toBeGreaterThan(0);
         orders.forEach(order => {
+          // Type assertions
+          assertType<string, typeof order.orderStatus>(order.orderStatus);
+          assertType<string, typeof order.customerName>(order.customerName);
+          assertType<number, typeof order.customerPostCount>(order.customerPostCount);
           expect(typeof (order.customerPostCount)).toBe('number');
           expect((order.customerPostCount)).toBeGreaterThanOrEqual(0);
         });
@@ -1095,6 +1203,11 @@ describe('Advanced Navigation Properties', () => {
 
         expect(posts.length).toBeGreaterThan(0);
         posts.forEach(post => {
+          // Type assertions
+          assertType<string | undefined, typeof post.postTitle>(post.postTitle);
+          assertType<string, typeof post.authorName>(post.authorName);
+          assertType<number, typeof post.authorPostCount>(post.authorPostCount);
+          assertType<number, typeof post.authorOrderCount>(post.authorOrderCount);
           expect(post.authorName).toBeDefined();
           expect(typeof (post.authorPostCount)).toBe('number');
           expect(typeof (post.authorOrderCount)).toBe('number');
@@ -1118,6 +1231,9 @@ describe('Advanced Navigation Properties', () => {
 
         expect(users.length).toBeGreaterThan(0);
         users.forEach(user => {
+          // Type assertions
+          assertType<string, typeof user.username>(user.username);
+          assertType<number, typeof user.postCount>(user.postCount);
           expect(typeof (user.postCount)).toBe('number');
         });
       });
@@ -1137,6 +1253,12 @@ describe('Advanced Navigation Properties', () => {
 
         expect(users.length).toBeGreaterThan(0);
         users.forEach(user => {
+          // Type assertions
+          assertType<number, typeof user.id>(user.id);
+          assertType<string, typeof user.username>(user.username);
+          assertType<string, typeof user.email>(user.email);
+          assertType<boolean, typeof user.isActive>(user.isActive);
+          assertType<number | undefined, typeof user.age>(user.age);
           expect(user.isActive).toBe(true);
           expect(user.age!).toBeGreaterThan(20);
         });
@@ -1152,6 +1274,10 @@ describe('Advanced Navigation Properties', () => {
 
         expect(usersWithCounts.length).toBeGreaterThan(0);
         usersWithCounts.forEach(user => {
+          // Type assertions
+          assertType<string, typeof user.username>(user.username);
+          assertType<number, typeof user.postCount>(user.postCount);
+          assertType<number, typeof user.orderCount>(user.orderCount);
           expect(user.username).toBeDefined();
           expect(typeof (user.postCount)).toBe('number');
           expect(typeof (user.orderCount)).toBe('number');
@@ -1172,10 +1298,20 @@ describe('Advanced Navigation Properties', () => {
           }))
           .toList();
 
+        // Type assertions for users array
+        users.forEach(user => {
+          assertType<string, typeof user.username>(user.username);
+          assertType<number[], typeof user.postIds>(user.postIds);
+        });
+
         const userWithPosts = users.find(u => u.postIds.length > 0);
         if (userWithPosts) {
+          // Type assertions
+          assertType<string, typeof userWithPosts.username>(userWithPosts.username);
+          assertType<number[], typeof userWithPosts.postIds>(userWithPosts.postIds);
           expect(Array.isArray(userWithPosts.postIds)).toBe(true);
           userWithPosts.postIds.forEach(id => {
+            assertType<number, typeof id>(id);
             expect(typeof id).toBe('number');
             expect(id).toBeGreaterThan(0);
           });
@@ -1194,10 +1330,20 @@ describe('Advanced Navigation Properties', () => {
           }))
           .toList();
 
+        // Type assertions for users array
+        users.forEach(user => {
+          assertType<string, typeof user.username>(user.username);
+          assertType<string[], typeof user.postTitles>(user.postTitles);
+        });
+
         const userWithPosts = users.find(u => u.postTitles.length > 0);
         if (userWithPosts) {
+          // Type assertions
+          assertType<string, typeof userWithPosts.username>(userWithPosts.username);
+          assertType<string[], typeof userWithPosts.postTitles>(userWithPosts.postTitles);
           expect(Array.isArray(userWithPosts.postTitles)).toBe(true);
           userWithPosts.postTitles.forEach(title => {
+            assertType<string, typeof title>(title);
             expect(typeof title).toBe('string');
             expect(title.length).toBeGreaterThan(0);
           });
@@ -1226,6 +1372,11 @@ describe('Advanced Navigation Properties', () => {
           .toList();
 
         expect(users.length).toBe(1);
+        // Type assertions
+        const user = users[0];
+        assertType<string, typeof user.username>(user.username);
+        assertType<number, typeof user.userId>(user.userId);
+        assertType<number[], typeof user.postIds>(user.postIds);
         expect(users[0].postIds).toEqual([]);
       });
     });
@@ -1245,6 +1396,9 @@ describe('Advanced Navigation Properties', () => {
 
         expect(posts.length).toBeGreaterThan(0);
         posts.forEach(post => {
+          // Type assertions
+          assertType<string | undefined, typeof post.title>(post.title);
+          assertType<string, typeof post.authorName>(post.authorName);
           expect(post).toHaveProperty('title');
           expect(post).toHaveProperty('authorName');
           expect(post).not.toHaveProperty('email'); // Shouldn't have other user fields
@@ -1267,6 +1421,11 @@ describe('Advanced Navigation Properties', () => {
           .toList();
 
         expect(users.length).toBeGreaterThan(0);
+        users.forEach(user => {
+          // Type assertions
+          assertType<string, typeof user.username>(user.username);
+          assertType<{ title: string | undefined }[], typeof user.highViewPosts>(user.highViewPosts);
+        });
       });
     });
   });
@@ -1292,6 +1451,11 @@ describe('Advanced Navigation Properties', () => {
           .toList();
 
         expect(result.length).toBe(1);
+        // Type assertions
+        const r = result[0];
+        assertType<string, typeof r.username>(r.username);
+        assertType<number, typeof r.userId>(r.userId);
+        assertType<number[], typeof r.distinctViewCounts>(r.distinctViewCounts);
         expect(Array.isArray(result[0].distinctViewCounts)).toBe(true);
       });
     });
@@ -1317,6 +1481,12 @@ describe('Advanced Navigation Properties', () => {
           .toList();
 
         expect(users.length).toBe(1);
+        // Type assertions
+        const user = users[0];
+        assertType<string, typeof user.username>(user.username);
+        assertType<number, typeof user.userId>(user.userId);
+        // Note: posts/orders select the full entity, so they should be arrays of entity types
+        // The actual type depends on how toList processes p => p
         expect(users[0].posts).toEqual([]);
         expect(users[0].orders).toEqual([]);
       });
@@ -1341,6 +1511,12 @@ describe('Advanced Navigation Properties', () => {
           .toList();
 
         expect(users.length).toBe(1);
+        // Type assertions
+        const user = users[0];
+        assertType<string, typeof user.username>(user.username);
+        assertType<number, typeof user.userId>(user.userId);
+        assertType<number, typeof user.postCount>(user.postCount);
+        assertType<number | null, typeof user.maxViews>(user.maxViews);
         expect(users[0].postCount).toBe(0);
         expect(users[0].maxViews).toBeNull();
       });

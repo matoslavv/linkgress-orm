@@ -534,6 +534,20 @@ describe('Collection Strategy Comparison', () => {
 
       await cleanupDatabase(tempTableDb);
 
+      // Type assertions
+      jsonbResults.forEach(u => {
+        assertType<number, typeof u.userId>(u.userId);
+        assertType<string, typeof u.username>(u.username);
+        assertType<{ title: string | undefined }[], typeof u.posts>(u.posts);
+        assertType<{ status: string; totalAmount: number }[], typeof u.orders>(u.orders);
+      });
+      tempTableResults.forEach(u => {
+        assertType<number, typeof u.userId>(u.userId);
+        assertType<string, typeof u.username>(u.username);
+        assertType<{ title: string | undefined }[], typeof u.posts>(u.posts);
+        assertType<{ status: string; totalAmount: number }[], typeof u.orders>(u.orders);
+      });
+
       // Sort arrays to ensure consistent ordering for comparison
       jsonbResults.forEach(u => {
         u.posts.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
@@ -585,6 +599,18 @@ describe('Collection Strategy Comparison', () => {
 
       await cleanupDatabase(tempTableDb);
 
+      // Type assertions
+      jsonbResults.forEach(u => {
+        assertType<number, typeof u.userId>(u.userId);
+        assertType<string, typeof u.username>(u.username);
+        assertType<{ title: string | undefined }[], typeof u.posts>(u.posts);
+      });
+      tempTableResults.forEach(u => {
+        assertType<number, typeof u.userId>(u.userId);
+        assertType<string, typeof u.username>(u.username);
+        assertType<{ title: string | undefined }[], typeof u.posts>(u.posts);
+      });
+
       // Verify results are identical
       expect(jsonbResults).toEqual(tempTableResults);
 
@@ -630,6 +656,18 @@ describe('Collection Strategy Comparison', () => {
         .toList();
 
       await cleanupDatabase(tempTableDb);
+
+      // Type assertions
+      jsonbResults.forEach(u => {
+        assertType<number, typeof u.userId>(u.userId);
+        assertType<string, typeof u.username>(u.username);
+        assertType<{ title: string | undefined }[], typeof u.distinctTitles>(u.distinctTitles);
+      });
+      tempTableResults.forEach(u => {
+        assertType<number, typeof u.userId>(u.userId);
+        assertType<string, typeof u.username>(u.username);
+        assertType<{ title: string | undefined }[], typeof u.distinctTitles>(u.distinctTitles);
+      });
 
       // Verify results are identical
       expect(jsonbResults).toEqual(tempTableResults);
