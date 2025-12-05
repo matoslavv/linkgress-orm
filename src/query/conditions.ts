@@ -46,6 +46,14 @@ export abstract class WhereConditionBase {
   abstract buildSql(context: SqlBuildContext): string;
 
   /**
+   * Get all field references used in this condition.
+   * Used to detect navigation property references that need JOINs.
+   */
+  getFieldRefs(): FieldRef[] {
+    return [];
+  }
+
+  /**
    * Helper to check if a value is a FieldRef
    */
   protected isFieldRef<V>(value: any): value is FieldRef<any, V> {
@@ -116,6 +124,20 @@ export abstract class WhereComparisonBase<V = any> extends WhereConditionBase {
   protected abstract getOperator(): string;
 
   /**
+   * Get all field references used in this comparison
+   */
+  override getFieldRefs(): FieldRef[] {
+    const refs: FieldRef[] = [];
+    if (this.isFieldRef(this.field)) {
+      refs.push(this.field);
+    }
+    if (this.value !== undefined && this.isFieldRef(this.value)) {
+      refs.push(this.value);
+    }
+    return refs;
+  }
+
+  /**
    * Build the comparison SQL
    * Can be overridden for custom behavior
    */
@@ -142,6 +164,17 @@ export class LogicalCondition extends WhereConditionBase {
     private conditions: WhereConditionBase[]
   ) {
     super();
+  }
+
+  /**
+   * Get all field references from nested conditions
+   */
+  override getFieldRefs(): FieldRef[] {
+    const refs: FieldRef[] = [];
+    for (const cond of this.conditions) {
+      refs.push(...cond.getFieldRefs());
+    }
+    return refs;
   }
 
   buildSql(context: SqlBuildContext): string {
@@ -321,6 +354,20 @@ export class BetweenComparison<V = any> extends WhereComparisonBase<V> {
     private max: FieldRef<any, V> | V
   ) {
     super(field, undefined);
+  }
+
+  /**
+   * Get all field references including min and max
+   */
+  override getFieldRefs(): FieldRef[] {
+    const refs = super.getFieldRefs();
+    if (this.isFieldRef(this.min)) {
+      refs.push(this.min);
+    }
+    if (this.isFieldRef(this.max)) {
+      refs.push(this.max);
+    }
+    return refs;
   }
 
   buildSql(context: SqlBuildContext): string {
@@ -510,6 +557,21 @@ export class SqlFragment<TValueType = any> extends WhereConditionBase {
    */
   getAlias(): string | undefined {
     return this.alias;
+  }
+
+  /**
+   * Get all field references from the fragment values
+   */
+  override getFieldRefs(): FieldRef[] {
+    const refs: FieldRef[] = [];
+    for (const value of this.values) {
+      if (this.isFieldRef(value)) {
+        refs.push(value);
+      } else if (value instanceof SqlFragment) {
+        refs.push(...value.getFieldRefs());
+      }
+    }
+    return refs;
   }
 
   /**

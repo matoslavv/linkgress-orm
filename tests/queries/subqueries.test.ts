@@ -1,6 +1,6 @@
 import { describe, test, expect } from '@jest/globals';
 import { withDatabase, seedTestData } from '../utils/test-database';
-import { eq, gt, sql, DbCteBuilder } from '../../src';
+import { eq, gt, sql, DbCteBuilder, exists, and, gte, lte } from '../../src';
 
 describe('Subquery Operations', () => {
   describe('Scalar subqueries', () => {
@@ -596,6 +596,151 @@ describe('Subquery Operations', () => {
           // If mapWith works, should be 150
           expect(result[0].roundedAvgViews).toBe(150);
         });
+      });
+    });
+  });
+
+  describe('Navigation property access in WHERE conditions', () => {
+    test('should automatically add JOIN when navigation property used in WHERE', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // Access user.username through navigation property in WHERE condition
+        // This should automatically add a JOIN on the user table
+        const result = await db.posts
+          .where(p => eq(p.user!.username, 'alice'))
+          .select(p => ({
+            title: p.title,
+            userId: p.userId,
+          }))
+          .toList();
+
+        expect(result.length).toBe(2); // Alice has 2 posts
+        result.forEach(r => {
+          expect(r.title).toMatch(/Alice Post/);
+        });
+      });
+    });
+
+    test('should work with navigation property in sql template WHERE condition', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // Access user.isActive through navigation property in sql template
+        const result = await db.posts
+          .where(p => sql`${p.user!.isActive} = true`)
+          .select(p => ({
+            title: p.title,
+            userId: p.userId,
+          }))
+          .toList();
+
+        // Alice and Bob are active, so 3 posts total
+        expect(result.length).toBe(3);
+      });
+    });
+
+    test('should work with navigation property in combined WHERE condition', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // Combine navigation property condition with regular condition
+        const result = await db.posts
+          .where(p => sql`${p.user!.age} > 30 AND ${p.views} > 100`)
+          .select(p => ({
+            title: p.title,
+            views: p.views,
+          }))
+          .toList();
+
+        // Only Bob (age 35) has a post with views > 100 (200 views)
+        expect(result.length).toBe(1);
+        expect(result[0].title).toBe('Bob Post');
+        expect(result[0].views).toBe(200);
+      });
+    });
+
+    test('should work with navigation property in both SELECT and WHERE', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // Use navigation in both SELECT and WHERE
+        const result = await db.posts
+          .where(p => eq(p.user!.isActive, true))
+          .select(p => ({
+            title: p.title,
+            username: p.user!.username,
+            userAge: p.user!.age,
+          }))
+          .toList();
+
+        expect(result.length).toBe(3); // Alice (2) + Bob (1)
+        result.forEach(r => {
+          expect(r).toHaveProperty('username');
+          expect(r).toHaveProperty('userAge');
+        });
+      });
+    });
+
+    test('should add JOIN when outer navigation property used in exists() subquery WHERE', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // This is the critical test case:
+        // - Outer query is on posts
+        // - Inner subquery is on orders
+        // - Inner subquery's WHERE references p.user!.age (navigation from outer query)
+        // This should generate a JOIN on the users table in the outer query
+        const result = await db.posts
+          .where(p => exists(
+            db.orders
+              .where(o => and(
+                eq(o.userId, p.userId),
+                // This is the key: accessing outer query's navigation property
+                // inside the inner subquery's WHERE condition
+                sql`${p.user!.age} >= 30`
+              ))
+              .select(o => ({ orderId: o.id }))
+              .asSubquery('table')
+          ))
+          .select(p => ({
+            title: p.title,
+            userId: p.userId,
+          }))
+          .toList();
+
+        // Only Bob (age 35) has both posts AND orders, and age >= 30
+        // Alice (age 25) has orders but age < 30
+        expect(result.length).toBe(1);
+        expect(result[0].title).toBe('Bob Post');
+      });
+    });
+
+    test('should add JOIN when outer navigation property used in exists() with multiple conditions', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // More complex case: multiple outer navigation properties in inner subquery
+        const result = await db.posts
+          .where(p => exists(
+            db.orders
+              .where(o => and(
+                eq(o.userId, p.userId),
+                // Multiple navigation property accesses from outer query
+                sql`${p.user!.age} >= 20 AND ${p.user!.age} <= 40 AND ${p.user!.isActive} = true`
+              ))
+              .select(o => ({ orderId: o.id }))
+              .asSubquery('table')
+          ))
+          .select(p => ({
+            title: p.title,
+            userId: p.userId,
+          }))
+          .toList();
+
+        // Alice (age 25, active) and Bob (age 35, active) both have orders
+        // Both are between 20-40 and active
+        expect(result.length).toBe(3); // Alice's 2 posts + Bob's 1 post
       });
     });
   });

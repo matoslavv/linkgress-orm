@@ -1923,6 +1923,47 @@ export class SelectQueryBuilder<TSelection> {
   }
 
   /**
+   * Detect navigation property references in a WHERE condition and add necessary JOINs
+   */
+  private detectAndAddJoinsFromCondition(condition: Condition | undefined, joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean }>): void {
+    if (!condition) {
+      return;
+    }
+
+    // Get all field references from the condition
+    const fieldRefs = condition.getFieldRefs();
+
+    for (const fieldRef of fieldRefs) {
+      if ('__tableAlias' in fieldRef && fieldRef.__tableAlias) {
+        const tableAlias = fieldRef.__tableAlias as string;
+        // Check if this references a related table that isn't already joined
+        if (tableAlias !== this.schema.name && !joins.some(j => j.alias === tableAlias)) {
+          // Find the relation config for this navigation
+          const relation = this.schema.relations[tableAlias];
+          if (relation && relation.type === 'one') {
+            // Get target schema from targetTableBuilder if available
+            let targetSchema: string | undefined;
+            if (relation.targetTableBuilder) {
+              const targetTableSchema = relation.targetTableBuilder.build();
+              targetSchema = targetTableSchema.schema;
+            }
+
+            // Add a JOIN for this reference
+            joins.push({
+              alias: tableAlias,
+              targetTable: relation.targetTable,
+              targetSchema,
+              foreignKeys: relation.foreignKeys || [relation.foreignKey || ''],
+              matches: relation.matches || [],
+              isMandatory: relation.isMandatory ?? false,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  /**
    * Build SQL query
    */
   private buildQuery(selection: any, context: QueryContext): { sql: string; params: any[] } {
@@ -1938,6 +1979,9 @@ export class SelectQueryBuilder<TSelection> {
 
     // Scan selection for navigation property references and add JOINs
     this.detectAndAddJoinsFromSelection(selection, joins);
+
+    // Scan WHERE condition for navigation property references and add JOINs
+    this.detectAndAddJoinsFromCondition(this.whereCond, joins);
 
     // Handle case where selection is a single value (not an object with properties)
     if (selection instanceof SqlFragment) {
@@ -2676,6 +2720,8 @@ export class SelectQueryBuilder<TSelection> {
         executor: this.executor,
       };
 
+      console.log('##LINKED 3242342####');
+
       // Analyze the selector to extract nested queries
       const mockRow = this.createMockRow();
       const selectionResult = this.selector(mockRow);
@@ -2696,7 +2742,40 @@ export class SelectQueryBuilder<TSelection> {
       selectionMetadata = this.selector(mockRow) as any;
     }
 
-    return new Subquery(sqlBuilder, mode, selectionMetadata) as any;
+    // Extract outer field refs from the WHERE condition
+    // These are field refs that reference tables other than this subquery's table
+    // and need to be propagated to the outer query for JOIN detection
+    const outerFieldRefs = this.extractOuterFieldRefs();
+
+    return new Subquery(sqlBuilder, mode, selectionMetadata, outerFieldRefs) as any;
+  }
+
+  /**
+   * Extract field refs from the WHERE condition that reference outer queries.
+   * These are field refs with a __tableAlias that doesn't match this query's schema.
+   */
+  private extractOuterFieldRefs(): FieldRef[] {
+    if (!this.whereCond) {
+      return [];
+    }
+
+    const allRefs = this.whereCond.getFieldRefs();
+    const outerRefs: FieldRef[] = [];
+    const currentTableName = this.schema.name;
+
+    for (const ref of allRefs) {
+      // Check if this ref is from an outer query (different table alias)
+      if ('__tableAlias' in ref && ref.__tableAlias) {
+        const tableAlias = ref.__tableAlias as string;
+        // If the table alias doesn't match our current schema, it's from an outer query
+        // Also check if it's not a navigation property of this table (which would be in schema.relations)
+        if (tableAlias !== currentTableName && !this.schema.relations[tableAlias]) {
+          outerRefs.push(ref);
+        }
+      }
+    }
+
+    return outerRefs;
   }
 }
 

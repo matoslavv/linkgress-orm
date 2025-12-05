@@ -22,6 +22,12 @@ export class Subquery<TResult = any, TMode extends 'scalar' | 'array' | 'table' 
   private selectionMetadata?: Record<string, any>;
 
   /**
+   * Field refs from outer queries used inside this subquery's WHERE condition.
+   * These need to be propagated to the outer query so it can add necessary JOINs.
+   */
+  private outerFieldRefs: FieldRef[] = [];
+
+  /**
    * Phantom type marker for type checking
    */
   private __resultType?: TResult;
@@ -30,18 +36,20 @@ export class Subquery<TResult = any, TMode extends 'scalar' | 'array' | 'table' 
   constructor(
     sqlBuilder: (context: SqlBuildContext & { tableAlias?: string }) => string,
     mode: TMode = 'table' as TMode,
-    selectionMetadata?: Record<string, any>
+    selectionMetadata?: Record<string, any>,
+    outerFieldRefs?: FieldRef[]
   ) {
     this.sqlBuilder = sqlBuilder;
     this.__mode = mode;
     this.selectionMetadata = selectionMetadata;
+    this.outerFieldRefs = outerFieldRefs || [];
   }
 
   /**
    * Set an alias for this subquery (used when subquery is a table source)
    */
   as(alias: string): Subquery<TResult, TMode> {
-    const clone = new Subquery<TResult, TMode>(this.sqlBuilder, this.__mode as TMode, this.selectionMetadata);
+    const clone = new Subquery<TResult, TMode>(this.sqlBuilder, this.__mode as TMode, this.selectionMetadata, this.outerFieldRefs);
     clone.alias = alias;
     return clone;
   }
@@ -65,6 +73,14 @@ export class Subquery<TResult = any, TMode extends 'scalar' | 'array' | 'table' 
    */
   getSelectionMetadata(): Record<string, any> | undefined {
     return this.selectionMetadata;
+  }
+
+  /**
+   * Get field refs from outer queries used inside this subquery.
+   * These need to be propagated to the outer query for JOIN detection.
+   */
+  getOuterFieldRefs(): FieldRef[] {
+    return this.outerFieldRefs;
   }
 
   /**
@@ -112,6 +128,14 @@ export class ExistsCondition extends WhereConditionBase {
     super();
   }
 
+  /**
+   * Get field refs from outer queries used inside this subquery.
+   * These are propagated to enable JOIN detection in the outer query.
+   */
+  override getFieldRefs(): FieldRef[] {
+    return this.subquery.getOuterFieldRefs();
+  }
+
   buildSql(context: SqlBuildContext): string {
     const subquerySql = this.subquery.buildSql(context);
     return `EXISTS (${subquerySql})`;
@@ -124,6 +148,14 @@ export class ExistsCondition extends WhereConditionBase {
 export class NotExistsCondition extends WhereConditionBase {
   constructor(private subquery: Subquery) {
     super();
+  }
+
+  /**
+   * Get field refs from outer queries used inside this subquery.
+   * These are propagated to enable JOIN detection in the outer query.
+   */
+  override getFieldRefs(): FieldRef[] {
+    return this.subquery.getOuterFieldRefs();
   }
 
   buildSql(context: SqlBuildContext): string {
@@ -144,6 +176,10 @@ export class InSubqueryCondition<T> extends WhereConditionBase {
     super();
   }
 
+  override getFieldRefs(): FieldRef[] {
+    return [this.field];
+  }
+
   buildSql(context: SqlBuildContext): string {
     const fieldName = this.getDbColumnName(this.field);
     const subquerySql = this.subquery.buildSql(context);
@@ -160,6 +196,10 @@ export class NotInSubqueryCondition<T> extends WhereConditionBase {
     private subquery: Subquery<T[], 'array'>
   ) {
     super();
+  }
+
+  override getFieldRefs(): FieldRef[] {
+    return [this.field];
   }
 
   buildSql(context: SqlBuildContext): string {
@@ -180,6 +220,10 @@ export class ScalarSubqueryComparison<T> extends WhereConditionBase {
     private subquery: Subquery<T, 'scalar'>
   ) {
     super();
+  }
+
+  override getFieldRefs(): FieldRef[] {
+    return [this.field];
   }
 
   buildSql(context: SqlBuildContext): string {
