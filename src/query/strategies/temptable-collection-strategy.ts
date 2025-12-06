@@ -318,6 +318,9 @@ ${aggregationSQL}
   /**
    * Build a simple SELECT query without aggregation
    * Results will be grouped in JavaScript for better performance
+   *
+   * When LIMIT/OFFSET is specified, uses ROW_NUMBER() window function to correctly
+   * apply pagination per parent row (not globally).
    */
   private buildSimpleSelectSQL(
     config: CollectionAggregationConfig,
@@ -350,18 +353,16 @@ ${aggregationSQL}
     const additionalWhere = whereClause ? ` AND ${whereClause}` : '';
 
     // Build ORDER BY clause
-    const orderBySQL = orderByClause ? ` ORDER BY ${orderByClause}` : ` ORDER BY "id" DESC`;
+    const orderBySQL = orderByClause ? `ORDER BY ${orderByClause}` : `ORDER BY "id" DESC`;
 
-    // Build LIMIT/OFFSET
-    let limitOffsetClause = '';
-    if (limitValue !== undefined) {
-      limitOffsetClause = ` LIMIT ${limitValue}`;
-    }
-    if (offsetValue !== undefined) {
-      limitOffsetClause += ` OFFSET ${offsetValue}`;
+    // If LIMIT or OFFSET is specified, use ROW_NUMBER() for per-parent pagination
+    if (limitValue !== undefined || offsetValue !== undefined) {
+      return this.buildSimpleSelectSQLWithRowNumber(
+        config, tempTableName, selectFields, additionalWhere, orderBySQL
+      );
     }
 
-    // Simple SELECT with foreign key for grouping
+    // No LIMIT/OFFSET - use simple SELECT
     const sql = `
 SELECT
   "${foreignKey}" as parent_id,
@@ -369,7 +370,53 @@ SELECT
 FROM "${targetTable}"
 WHERE "${foreignKey}" IN (SELECT id FROM ${tempTableName})${additionalWhere}
 ${orderBySQL}
-${limitOffsetClause}
+    `.trim();
+
+    return sql;
+  }
+
+  /**
+   * Build simple SELECT with ROW_NUMBER() for per-parent LIMIT/OFFSET
+   */
+  private buildSimpleSelectSQLWithRowNumber(
+    config: CollectionAggregationConfig,
+    tempTableName: string,
+    selectFields: string,
+    additionalWhere: string,
+    orderBySQL: string
+  ): string {
+    const { targetTable, foreignKey, orderByClause, limitValue, offsetValue } = config;
+
+    // Build ORDER BY for ROW_NUMBER() - use the order clause or default to id DESC
+    const rowNumberOrderBy = orderByClause || `"id" DESC`;
+
+    // Build the row number filter condition
+    const offset = offsetValue || 0;
+    let rowNumberFilter: string;
+    if (limitValue !== undefined) {
+      rowNumberFilter = `WHERE "__rn" > ${offset} AND "__rn" <= ${offset + limitValue}`;
+    } else {
+      rowNumberFilter = `WHERE "__rn" > ${offset}`;
+    }
+
+    const sql = `
+SELECT
+  parent_id,
+  ${selectFields.split(', ').map(f => {
+    // Extract just the alias part for outer select
+    const match = f.match(/as "([^"]+)"$/);
+    return match ? `"${match[1]}"` : f;
+  }).join(', ')}
+FROM (
+  SELECT
+    "${foreignKey}" as parent_id,
+    ${selectFields},
+    ROW_NUMBER() OVER (PARTITION BY "${foreignKey}" ORDER BY ${rowNumberOrderBy}) as "__rn"
+  FROM "${targetTable}"
+  WHERE "${foreignKey}" IN (SELECT id FROM ${tempTableName})${additionalWhere}
+) sub
+${rowNumberFilter}
+${orderBySQL.replace(/ORDER BY/i, 'ORDER BY')}
     `.trim();
 
     return sql;
@@ -427,6 +474,9 @@ ${limitOffsetClause}
 
   /**
    * Build JSONB aggregation using temp table
+   *
+   * When LIMIT/OFFSET is specified, uses ROW_NUMBER() window function to correctly
+   * apply pagination per parent row (not globally).
    */
   private buildJsonbAggregationSQL(
     config: CollectionAggregationConfig,
@@ -457,21 +507,19 @@ ${limitOffsetClause}
     const additionalWhere = whereClause ? ` AND ${whereClause}` : '';
 
     // Build ORDER BY clause (use primary key DESC as default for consistent ordering matching JSONB)
-    const orderBySQL = orderByClause ? ` ORDER BY ${orderByClause}` : ` ORDER BY "id" DESC`;
-
-    // Build LIMIT/OFFSET (applied globally to match JSONB strategy behavior)
-    let limitOffsetClause = '';
-    if (limitValue !== undefined) {
-      limitOffsetClause = ` LIMIT ${limitValue}`;
-    }
-    if (offsetValue !== undefined) {
-      limitOffsetClause += ` OFFSET ${offsetValue}`;
-    }
+    const orderBySQL = orderByClause ? `ORDER BY ${orderByClause}` : `ORDER BY "id" DESC`;
 
     // Build jsonb_agg ORDER BY clause
     const jsonbAggOrderBy = orderByClause ? ` ORDER BY ${orderByClause}` : '';
 
-    // Build the SQL - matching JSONB strategy approach
+    // If LIMIT or OFFSET is specified, use ROW_NUMBER() for per-parent pagination
+    if (limitValue !== undefined || offsetValue !== undefined) {
+      return this.buildJsonbAggregationSQLWithRowNumber(
+        config, tempTableName, jsonbObjectExpr, additionalWhere
+      );
+    }
+
+    // No LIMIT/OFFSET - use simple aggregation
     const sql = `
 SELECT
   t."${foreignKey}" as parent_id,
@@ -483,7 +531,6 @@ FROM (
   FROM "${targetTable}"
   WHERE "${foreignKey}" IN (SELECT id FROM ${tempTableName})${additionalWhere}
   ${orderBySQL}
-  ${limitOffsetClause}
 ) t
 GROUP BY t."${foreignKey}"
     `.trim();
@@ -492,7 +539,51 @@ GROUP BY t."${foreignKey}"
   }
 
   /**
+   * Build JSONB aggregation with ROW_NUMBER() for per-parent LIMIT/OFFSET
+   */
+  private buildJsonbAggregationSQLWithRowNumber(
+    config: CollectionAggregationConfig,
+    tempTableName: string,
+    jsonbObjectExpr: string,
+    additionalWhere: string
+  ): string {
+    const { targetTable, foreignKey, orderByClause, limitValue, offsetValue } = config;
+
+    // Build ORDER BY for ROW_NUMBER() - use the order clause or default to id DESC
+    const rowNumberOrderBy = orderByClause || `"id" DESC`;
+
+    // Build the row number filter condition
+    const offset = offsetValue || 0;
+    let rowNumberFilter: string;
+    if (limitValue !== undefined) {
+      rowNumberFilter = `WHERE "__rn" > ${offset} AND "__rn" <= ${offset + limitValue}`;
+    } else {
+      rowNumberFilter = `WHERE "__rn" > ${offset}`;
+    }
+
+    const sql = `
+SELECT
+  t."${foreignKey}" as parent_id,
+  jsonb_agg(
+    ${jsonbObjectExpr}
+  ) as data
+FROM (
+  SELECT *, ROW_NUMBER() OVER (PARTITION BY "${foreignKey}" ORDER BY ${rowNumberOrderBy}) as "__rn"
+  FROM "${targetTable}"
+  WHERE "${foreignKey}" IN (SELECT id FROM ${tempTableName})${additionalWhere}
+) t
+${rowNumberFilter}
+GROUP BY t."${foreignKey}"
+    `.trim();
+
+    return sql;
+  }
+
+  /**
    * Build array aggregation using temp table
+   *
+   * When LIMIT/OFFSET is specified, uses ROW_NUMBER() window function to correctly
+   * apply pagination per parent row (not globally).
    */
   private buildArrayAggregationSQL(
     config: CollectionAggregationConfig,
@@ -508,21 +599,19 @@ GROUP BY t."${foreignKey}"
     const additionalWhere = whereClause ? ` AND ${whereClause}` : '';
 
     // Build ORDER BY clause (use primary key DESC as default for consistent ordering matching JSONB)
-    const orderBySQL = orderByClause ? ` ORDER BY ${orderByClause}` : ` ORDER BY "id" DESC`;
-
-    // Build LIMIT/OFFSET (applied globally to match JSONB strategy behavior)
-    let limitOffsetClause = '';
-    if (limitValue !== undefined) {
-      limitOffsetClause = ` LIMIT ${limitValue}`;
-    }
-    if (offsetValue !== undefined) {
-      limitOffsetClause += ` OFFSET ${offsetValue}`;
-    }
+    const orderBySQL = orderByClause ? `ORDER BY ${orderByClause}` : `ORDER BY "id" DESC`;
 
     // Build array_agg ORDER BY clause
     const arrayAggOrderBy = orderByClause ? ` ORDER BY ${orderByClause}` : '';
 
-    // Build the SQL - matching JSONB strategy approach
+    // If LIMIT or OFFSET is specified, use ROW_NUMBER() for per-parent pagination
+    if (limitValue !== undefined || offsetValue !== undefined) {
+      return this.buildArrayAggregationSQLWithRowNumber(
+        config, tempTableName, additionalWhere
+      );
+    }
+
+    // No LIMIT/OFFSET - use simple aggregation
     const sql = `
 SELECT
   t."${foreignKey}" as parent_id,
@@ -532,8 +621,45 @@ FROM (
   FROM "${targetTable}"
   WHERE "${foreignKey}" IN (SELECT id FROM ${tempTableName})${additionalWhere}
   ${orderBySQL}
-  ${limitOffsetClause}
 ) t
+GROUP BY t."${foreignKey}"
+    `.trim();
+
+    return sql;
+  }
+
+  /**
+   * Build array aggregation with ROW_NUMBER() for per-parent LIMIT/OFFSET
+   */
+  private buildArrayAggregationSQLWithRowNumber(
+    config: CollectionAggregationConfig,
+    tempTableName: string,
+    additionalWhere: string
+  ): string {
+    const { arrayField, targetTable, foreignKey, orderByClause, limitValue, offsetValue } = config;
+
+    // Build ORDER BY for ROW_NUMBER() - use the order clause or default to id DESC
+    const rowNumberOrderBy = orderByClause || `"id" DESC`;
+
+    // Build the row number filter condition
+    const offset = offsetValue || 0;
+    let rowNumberFilter: string;
+    if (limitValue !== undefined) {
+      rowNumberFilter = `WHERE "__rn" > ${offset} AND "__rn" <= ${offset + limitValue}`;
+    } else {
+      rowNumberFilter = `WHERE "__rn" > ${offset}`;
+    }
+
+    const sql = `
+SELECT
+  t."${foreignKey}" as parent_id,
+  array_agg(t."${arrayField}") as data
+FROM (
+  SELECT "${foreignKey}", "${arrayField}", ROW_NUMBER() OVER (PARTITION BY "${foreignKey}" ORDER BY ${rowNumberOrderBy}) as "__rn"
+  FROM "${targetTable}"
+  WHERE "${foreignKey}" IN (SELECT id FROM ${tempTableName})${additionalWhere}
+) t
+${rowNumberFilter}
 GROUP BY t."${foreignKey}"
     `.trim();
 

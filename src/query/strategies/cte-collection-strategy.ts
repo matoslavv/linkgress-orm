@@ -95,7 +95,48 @@ export class CteCollectionStrategy implements ICollectionStrategy {
   }
 
   /**
+   * Helper to collect all leaf fields from a potentially nested structure
+   * Returns array of { alias, expression } for SELECT clause (flattened with unique aliases)
+   */
+  private collectLeafFields(fields: SelectedField[], prefix: string = ''): Array<{ alias: string; expression: string }> {
+    const result: Array<{ alias: string; expression: string }> = [];
+    for (const field of fields) {
+      const fullAlias = prefix ? `${prefix}__${field.alias}` : field.alias;
+      if (field.nested) {
+        // Recurse into nested fields
+        result.push(...this.collectLeafFields(field.nested, fullAlias));
+      } else if (field.expression) {
+        // Leaf field
+        result.push({ alias: fullAlias, expression: field.expression });
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Helper to build jsonb_build_object expression (handles nested structures)
+   */
+  private buildJsonbObject(fields: SelectedField[], prefix: string = ''): string {
+    const parts: string[] = [];
+    for (const field of fields) {
+      if (field.nested) {
+        // Nested object - recurse
+        const nestedJsonb = this.buildJsonbObject(field.nested, prefix ? `${prefix}__${field.alias}` : field.alias);
+        parts.push(`'${field.alias}', ${nestedJsonb}`);
+      } else {
+        // Leaf field - reference the aliased column from subquery
+        const fullAlias = prefix ? `${prefix}__${field.alias}` : field.alias;
+        parts.push(`'${field.alias}', "${fullAlias}"`);
+      }
+    }
+    return `jsonb_build_object(${parts.join(', ')})`;
+  }
+
+  /**
    * Build JSONB aggregation CTE
+   *
+   * When LIMIT/OFFSET is specified, uses ROW_NUMBER() window function to correctly
+   * apply pagination per parent row (not globally).
    */
   private buildJsonbAggregation(
     config: CollectionAggregationConfig,
@@ -104,48 +145,30 @@ export class CteCollectionStrategy implements ICollectionStrategy {
   ): string {
     const { selectedFields, targetTable, foreignKey, whereClause, orderByClause, limitValue, offsetValue, isDistinct } = config;
 
-    // Helper to collect all leaf fields from a potentially nested structure
-    // Returns array of { alias, expression } for SELECT clause (flattened with unique aliases)
-    const collectLeafFields = (fields: SelectedField[], prefix: string = ''): Array<{ alias: string; expression: string }> => {
-      const result: Array<{ alias: string; expression: string }> = [];
-      for (const field of fields) {
-        const fullAlias = prefix ? `${prefix}__${field.alias}` : field.alias;
-        if (field.nested) {
-          // Recurse into nested fields
-          result.push(...collectLeafFields(field.nested, fullAlias));
-        } else if (field.expression) {
-          // Leaf field
-          result.push({ alias: fullAlias, expression: field.expression });
-        }
-      }
-      return result;
-    };
-
-    // Helper to build jsonb_build_object expression (handles nested structures)
-    const buildJsonbObject = (fields: SelectedField[], prefix: string = ''): string => {
-      const parts: string[] = [];
-      for (const field of fields) {
-        if (field.nested) {
-          // Nested object - recurse
-          const nestedJsonb = buildJsonbObject(field.nested, prefix ? `${prefix}__${field.alias}` : field.alias);
-          parts.push(`'${field.alias}', ${nestedJsonb}`);
-        } else {
-          // Leaf field - reference the aliased column from subquery
-          const fullAlias = prefix ? `${prefix}__${field.alias}` : field.alias;
-          parts.push(`'${field.alias}', "${fullAlias}"`);
-        }
-      }
-      return `jsonb_build_object(${parts.join(', ')})`;
-    };
-
     // Collect all leaf fields for the SELECT clause
-    const leafFields = collectLeafFields(selectedFields);
+    const leafFields = this.collectLeafFields(selectedFields);
 
+    // Build the JSONB fields for jsonb_build_object (handles nested structures)
+    const jsonbObjectExpr = this.buildJsonbObject(selectedFields);
+
+    // Build WHERE clause
+    const whereSQL = whereClause ? `WHERE ${whereClause}` : '';
+
+    // Build DISTINCT clause
+    const distinctClause = isDistinct ? 'DISTINCT ' : '';
+
+    // If LIMIT or OFFSET is specified, use ROW_NUMBER() for per-parent pagination
+    if (limitValue !== undefined || offsetValue !== undefined) {
+      return this.buildJsonbAggregationWithRowNumber(
+        config, leafFields, jsonbObjectExpr, whereSQL, distinctClause
+      );
+    }
+
+    // No LIMIT/OFFSET - use simple aggregation
     // Build the subquery SELECT fields
     const allSelectFields = [
       `"${foreignKey}" as "__fk_${foreignKey}"`,
       ...leafFields.map(f => {
-        // Always add alias if expression doesn't already match the quoted alias
         if (f.expression !== `"${f.alias}"`) {
           return `${f.expression} as "${f.alias}"`;
         }
@@ -153,26 +176,8 @@ export class CteCollectionStrategy implements ICollectionStrategy {
       }),
     ];
 
-    // Build the JSONB fields for jsonb_build_object (handles nested structures)
-    const jsonbObjectExpr = buildJsonbObject(selectedFields);
-
-    // Build WHERE clause
-    const whereSQL = whereClause ? `WHERE ${whereClause}` : '';
-
     // Build ORDER BY clause
     const orderBySQL = orderByClause ? `ORDER BY ${orderByClause}` : '';
-
-    // Build LIMIT/OFFSET
-    let limitOffsetClause = '';
-    if (limitValue !== undefined) {
-      limitOffsetClause = `LIMIT ${limitValue}`;
-    }
-    if (offsetValue !== undefined) {
-      limitOffsetClause += ` OFFSET ${offsetValue}`;
-    }
-
-    // Build DISTINCT clause
-    const distinctClause = isDistinct ? 'DISTINCT ' : '';
 
     // Build the jsonb_agg ORDER BY clause
     const jsonbAggOrderBy = orderByClause ? ` ORDER BY ${orderByClause}` : '';
@@ -188,7 +193,6 @@ FROM (
   FROM "${targetTable}"
   ${whereSQL}
   ${orderBySQL}
-  ${limitOffsetClause}
 ) sub
 GROUP BY "__fk_${foreignKey}"
     `.trim();
@@ -197,7 +201,79 @@ GROUP BY "__fk_${foreignKey}"
   }
 
   /**
+   * Build JSONB aggregation with ROW_NUMBER() for per-parent LIMIT/OFFSET
+   *
+   * SQL Pattern:
+   * ```sql
+   * SELECT parent_id, jsonb_agg(jsonb_build_object(...)) as data
+   * FROM (
+   *   SELECT *, ROW_NUMBER() OVER (PARTITION BY foreign_key ORDER BY ...) as __rn
+   *   FROM (SELECT ... FROM table WHERE ...) inner_sub
+   * ) sub
+   * WHERE __rn > offset AND __rn <= offset + limit
+   * GROUP BY parent_id
+   * ```
+   */
+  private buildJsonbAggregationWithRowNumber(
+    config: CollectionAggregationConfig,
+    leafFields: Array<{ alias: string; expression: string }>,
+    jsonbObjectExpr: string,
+    whereSQL: string,
+    distinctClause: string
+  ): string {
+    const { targetTable, foreignKey, orderByClause, limitValue, offsetValue } = config;
+
+    // Build the innermost SELECT fields
+    const innerSelectFields = [
+      `"${foreignKey}" as "__fk_${foreignKey}"`,
+      ...leafFields.map(f => {
+        if (f.expression !== `"${f.alias}"`) {
+          return `${f.expression} as "${f.alias}"`;
+        }
+        return f.expression;
+      }),
+    ];
+
+    // Build ORDER BY for ROW_NUMBER() - use the order clause or default to foreign key
+    const rowNumberOrderBy = orderByClause || `"__fk_${foreignKey}"`;
+
+    // Build the row number filter condition
+    const offset = offsetValue || 0;
+    let rowNumberFilter: string;
+    if (limitValue !== undefined) {
+      // Both LIMIT and potentially OFFSET
+      rowNumberFilter = `WHERE "__rn" > ${offset} AND "__rn" <= ${offset + limitValue}`;
+    } else {
+      // Only OFFSET (no LIMIT)
+      rowNumberFilter = `WHERE "__rn" > ${offset}`;
+    }
+
+    const cteSQL = `
+SELECT
+  "__fk_${foreignKey}" as parent_id,
+  jsonb_agg(
+    ${jsonbObjectExpr}
+  ) as data
+FROM (
+  SELECT *, ROW_NUMBER() OVER (PARTITION BY "__fk_${foreignKey}" ORDER BY ${rowNumberOrderBy}) as "__rn"
+  FROM (
+    SELECT ${distinctClause}${innerSelectFields.join(', ')}
+    FROM "${targetTable}"
+    ${whereSQL}
+  ) inner_sub
+) sub
+${rowNumberFilter}
+GROUP BY "__fk_${foreignKey}"
+    `.trim();
+
+    return cteSQL;
+  }
+
+  /**
    * Build array aggregation CTE (for toNumberList/toStringList)
+   *
+   * When LIMIT/OFFSET is specified, uses ROW_NUMBER() window function to correctly
+   * apply pagination per parent row (not globally).
    */
   private buildArrayAggregation(
     config: CollectionAggregationConfig,
@@ -213,20 +289,17 @@ GROUP BY "__fk_${foreignKey}"
     // Build WHERE clause
     const whereSQL = whereClause ? `WHERE ${whereClause}` : '';
 
-    // Build ORDER BY clause
-    const orderBySQL = orderByClause ? `ORDER BY ${orderByClause}` : '';
-
-    // Build LIMIT/OFFSET
-    let limitOffsetClause = '';
-    if (limitValue !== undefined) {
-      limitOffsetClause = `LIMIT ${limitValue}`;
-    }
-    if (offsetValue !== undefined) {
-      limitOffsetClause += ` OFFSET ${offsetValue}`;
-    }
-
     // Build DISTINCT clause
     const distinctClause = isDistinct ? 'DISTINCT ' : '';
+
+    // If LIMIT or OFFSET is specified, use ROW_NUMBER() for per-parent pagination
+    if (limitValue !== undefined || offsetValue !== undefined) {
+      return this.buildArrayAggregationWithRowNumber(config, whereSQL, distinctClause);
+    }
+
+    // No LIMIT/OFFSET - use simple aggregation
+    // Build ORDER BY clause
+    const orderBySQL = orderByClause ? `ORDER BY ${orderByClause}` : '';
 
     // Build the array_agg ORDER BY clause
     const arrayAggOrderBy = orderByClause ? ` ORDER BY ${orderByClause}` : '';
@@ -244,9 +317,51 @@ FROM (
     FROM "${targetTable}"
     ${whereSQL}
     ${orderBySQL}
-    ${limitOffsetClause}
   ) inner_sub
 ) sub
+GROUP BY "__fk_${foreignKey}"
+    `.trim();
+
+    return cteSQL;
+  }
+
+  /**
+   * Build array aggregation with ROW_NUMBER() for per-parent LIMIT/OFFSET
+   */
+  private buildArrayAggregationWithRowNumber(
+    config: CollectionAggregationConfig,
+    whereSQL: string,
+    distinctClause: string
+  ): string {
+    const { arrayField, targetTable, foreignKey, orderByClause, limitValue, offsetValue } = config;
+
+    // Build ORDER BY for ROW_NUMBER() - use the order clause or default to foreign key
+    const rowNumberOrderBy = orderByClause || `"__fk_${foreignKey}"`;
+
+    // Build the row number filter condition
+    const offset = offsetValue || 0;
+    let rowNumberFilter: string;
+    if (limitValue !== undefined) {
+      rowNumberFilter = `WHERE "__rn" > ${offset} AND "__rn" <= ${offset + limitValue}`;
+    } else {
+      rowNumberFilter = `WHERE "__rn" > ${offset}`;
+    }
+
+    const cteSQL = `
+SELECT
+  "__fk_${foreignKey}" as parent_id,
+  array_agg(
+    "${arrayField}"
+  ) as data
+FROM (
+  SELECT *, ROW_NUMBER() OVER (PARTITION BY "__fk_${foreignKey}" ORDER BY ${rowNumberOrderBy}) as "__rn"
+  FROM (
+    SELECT ${distinctClause}"${foreignKey}" as "__fk_${foreignKey}", "${arrayField}"
+    FROM "${targetTable}"
+    ${whereSQL}
+  ) inner_sub
+) sub
+${rowNumberFilter}
 GROUP BY "__fk_${foreignKey}"
     `.trim();
 

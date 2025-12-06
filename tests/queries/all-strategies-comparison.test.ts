@@ -220,10 +220,213 @@ describe('All Collection Strategies Comparison', () => {
     });
   });
 
-  // Note: Limit and Offset tests moved to lateral-strategy.test.ts
-  // CTE and temp table strategies have different behavior for LIMIT/OFFSET
-  // (they apply globally instead of per-parent, which is a known limitation)
-  // LATERAL strategy correctly applies LIMIT/OFFSET per parent row
+  describe('LIMIT and OFFSET (per-parent pagination)', () => {
+    test('should return identical results with LIMIT on collections', async () => {
+      await runWithAllStrategies(
+        async (db) => db.users
+          .select((u: any) => ({
+            userId: u.id,
+            username: u.username,
+            topPosts: u.posts!
+              .select((p: any) => ({
+                title: p.title,
+                views: p.views,
+              }))
+              .orderBy((p: any) => [[p.views, 'DESC']])
+              .limit(1)
+              .toList('topPosts'),
+          }))
+          .orderBy((u: any) => [[u.userId, 'ASC']])
+          .toList(),
+        (cte: any[], temp: any[], lateral: any[]) => {
+          // All strategies should return same result
+          expect(cte.length).toBe(temp.length);
+          expect(cte.length).toBe(lateral.length);
+
+          for (let i = 0; i < cte.length; i++) {
+            expect(cte[i].userId).toBe(temp[i].userId);
+            expect(cte[i].userId).toBe(lateral[i].userId);
+
+            // Each user should have at most 1 post (LIMIT 1 PER PARENT)
+            expect(cte[i].topPosts.length).toBeLessThanOrEqual(1);
+            expect(temp[i].topPosts.length).toBeLessThanOrEqual(1);
+            expect(lateral[i].topPosts.length).toBeLessThanOrEqual(1);
+
+            // Results should be identical
+            expect(cte[i].topPosts).toEqual(temp[i].topPosts);
+            expect(cte[i].topPosts).toEqual(lateral[i].topPosts);
+          }
+
+          // Verify specific results:
+          // Alice has 2 posts, should get 1 (the one with highest views)
+          const aliceCte = cte.find(u => u.username === 'alice');
+          expect(aliceCte!.topPosts.length).toBe(1);
+
+          // Bob has 1 post, should get 1
+          const bobCte = cte.find(u => u.username === 'bob');
+          expect(bobCte!.topPosts.length).toBe(1);
+
+          // Charlie has 0 posts, should get 0
+          const charlieCte = cte.find(u => u.username === 'charlie');
+          expect(charlieCte!.topPosts.length).toBe(0);
+        }
+      );
+    });
+
+    test('should return identical results with OFFSET on collections', async () => {
+      await runWithAllStrategies(
+        async (db) => db.users
+          .select((u: any) => ({
+            userId: u.id,
+            username: u.username,
+            skipFirstPost: u.posts!
+              .select((p: any) => ({
+                title: p.title,
+                views: p.views,
+              }))
+              .orderBy((p: any) => [[p.views, 'DESC']])
+              .offset(1)
+              .toList('skipFirstPost'),
+          }))
+          .orderBy((u: any) => [[u.userId, 'ASC']])
+          .toList(),
+        (cte: any[], temp: any[], lateral: any[]) => {
+          expect(cte.length).toBe(temp.length);
+          expect(cte.length).toBe(lateral.length);
+
+          for (let i = 0; i < cte.length; i++) {
+            expect(cte[i]).toEqual(temp[i]);
+            expect(cte[i]).toEqual(lateral[i]);
+          }
+
+          // Verify specific results:
+          // Alice has 2 posts, offset 1 should give 1 remaining post
+          const aliceCte = cte.find(u => u.username === 'alice');
+          expect(aliceCte!.skipFirstPost.length).toBe(1);
+
+          // Bob has 1 post, offset 1 should give 0
+          const bobCte = cte.find(u => u.username === 'bob');
+          expect(bobCte!.skipFirstPost.length).toBe(0);
+
+          // Charlie has 0 posts, offset 1 should still give 0
+          const charlieCte = cte.find(u => u.username === 'charlie');
+          expect(charlieCte!.skipFirstPost.length).toBe(0);
+        }
+      );
+    });
+
+    test('should return identical results with LIMIT and OFFSET combined', async () => {
+      await runWithAllStrategies(
+        async (db) => db.users
+          .select((u: any) => ({
+            userId: u.id,
+            username: u.username,
+            paginatedPosts: u.posts!
+              .select((p: any) => ({
+                title: p.title,
+                views: p.views,
+              }))
+              .orderBy((p: any) => [[p.views, 'DESC']])
+              .offset(1)
+              .limit(1)
+              .toList('paginatedPosts'),
+          }))
+          .orderBy((u: any) => [[u.userId, 'ASC']])
+          .toList(),
+        (cte: any[], temp: any[], lateral: any[]) => {
+          expect(cte.length).toBe(temp.length);
+          expect(cte.length).toBe(lateral.length);
+
+          for (let i = 0; i < cte.length; i++) {
+            expect(cte[i]).toEqual(temp[i]);
+            expect(cte[i]).toEqual(lateral[i]);
+          }
+
+          // Alice: 2 posts, offset 1 limit 1 = 1 post (second highest)
+          const aliceCte = cte.find(u => u.username === 'alice');
+          expect(aliceCte!.paginatedPosts.length).toBe(1);
+
+          // Bob: 1 post, offset 1 limit 1 = 0 posts
+          const bobCte = cte.find(u => u.username === 'bob');
+          expect(bobCte!.paginatedPosts.length).toBe(0);
+
+          // Charlie: 0 posts, offset 1 limit 1 = 0 posts
+          const charlieCte = cte.find(u => u.username === 'charlie');
+          expect(charlieCte!.paginatedPosts.length).toBe(0);
+        }
+      );
+    });
+
+    test('should return identical results with LIMIT and filter combined', async () => {
+      await runWithAllStrategies(
+        async (db) => db.users
+          .select((u: any) => ({
+            userId: u.id,
+            username: u.username,
+            topHighViewPosts: u.posts!
+              .where((p: any) => gt(p.views!, 50))
+              .select((p: any) => ({
+                title: p.title,
+                views: p.views,
+              }))
+              .orderBy((p: any) => [[p.views, 'DESC']])
+              .limit(1)
+              .toList('topHighViewPosts'),
+          }))
+          .orderBy((u: any) => [[u.userId, 'ASC']])
+          .toList(),
+        (cte: any[], temp: any[], lateral: any[]) => {
+          expect(cte.length).toBe(temp.length);
+          expect(cte.length).toBe(lateral.length);
+
+          for (let i = 0; i < cte.length; i++) {
+            expect(cte[i]).toEqual(temp[i]);
+            expect(cte[i]).toEqual(lateral[i]);
+
+            // Each user should have at most 1 post after filter and limit
+            expect(cte[i].topHighViewPosts.length).toBeLessThanOrEqual(1);
+          }
+        }
+      );
+    });
+
+    test('LIMIT should be applied per-parent, not globally', async () => {
+      // This test specifically verifies that LIMIT 1 returns 1 post PER USER, not 1 post total
+      await runWithAllStrategies(
+        async (db) => db.users
+          .select((u: any) => ({
+            userId: u.id,
+            username: u.username,
+            topPost: u.posts!
+              .select((p: any) => ({
+                title: p.title,
+                views: p.views,
+              }))
+              .orderBy((p: any) => [[p.views, 'DESC']])
+              .limit(1)
+              .toList('topPost'),
+          }))
+          .orderBy((u: any) => [[u.userId, 'ASC']])
+          .toList(),
+        (cte: any[], temp: any[], lateral: any[]) => {
+          // Count total posts across all users
+          const cteTotal = cte.reduce((sum, u) => sum + u.topPost.length, 0);
+          const tempTotal = temp.reduce((sum, u) => sum + u.topPost.length, 0);
+          const lateralTotal = lateral.reduce((sum, u) => sum + u.topPost.length, 0);
+
+          // Should be > 1 because LIMIT is per-parent (Alice gets 1, Bob gets 1 = 2 total)
+          // If it were global, we'd only get 1 total
+          expect(cteTotal).toBeGreaterThan(1);
+          expect(tempTotal).toBeGreaterThan(1);
+          expect(lateralTotal).toBeGreaterThan(1);
+
+          // All strategies should have the same total
+          expect(cteTotal).toBe(tempTotal);
+          expect(cteTotal).toBe(lateralTotal);
+        }
+      );
+    });
+  });
 
   describe('Array aggregations', () => {
     test('should return identical toStringList results', async () => {
