@@ -1,4 +1,4 @@
-import { Condition, ConditionBuilder } from './conditions';
+import { Condition, ConditionBuilder, and as andCondition } from './conditions';
 import { TableSchema } from '../schema/table-builder';
 import type { DatabaseClient } from '../database/database-client.interface';
 import type { QueryExecutor } from '../entity/db-context';
@@ -87,11 +87,17 @@ export class JoinQueryBuilder<TLeft, TRight> {
 
   /**
    * Add WHERE condition
+   * Multiple where() calls are chained with AND logic
    */
   where(condition: (left: TLeft, right: TRight) => Condition): this {
     const mockLeft = this.createMockRow(this.leftSchema, this.leftAlias);
     const mockRight = this.createMockRow(this.rightSchema, this.rightAlias);
-    this.whereCond = condition(mockLeft, mockRight);
+    const newCondition = condition(mockLeft, mockRight);
+    if (this.whereCond) {
+      this.whereCond = andCondition(this.whereCond, newCondition);
+    } else {
+      this.whereCond = newCondition;
+    }
     return this;
   }
 

@@ -1,4 +1,4 @@
-import { Condition, ConditionBuilder, SqlFragment, SqlBuildContext, FieldRef, UnwrapSelection } from './conditions';
+import { Condition, ConditionBuilder, SqlFragment, SqlBuildContext, FieldRef, UnwrapSelection, and as andCondition } from './conditions';
 import { TableSchema } from '../schema/table-builder';
 import type { QueryExecutor, CollectionStrategyType } from '../entity/db-context';
 import type { DatabaseClient, QueryResult } from '../database/database-client.interface';
@@ -114,10 +114,16 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
 
   /**
    * Add WHERE condition
+   * Multiple where() calls are chained with AND logic
    */
   where(condition: (row: TRow) => Condition): this {
     const mockRow = this.createMockRow();
-    this.whereCond = condition(mockRow);
+    const newCondition = condition(mockRow);
+    if (this.whereCond) {
+      this.whereCond = andCondition(this.whereCond, newCondition);
+    } else {
+      this.whereCond = newCondition;
+    }
     return this;
   }
 
@@ -626,6 +632,7 @@ export class SelectQueryBuilder<TSelection> {
 
   /**
    * Add WHERE condition
+   * Multiple where() calls are chained with AND logic
    * Note: The row parameter represents the selected shape (after select())
    */
   where(condition: (row: any) => Condition): this {
@@ -634,7 +641,12 @@ export class SelectQueryBuilder<TSelection> {
     const selectedMock = this.selector(mockRow);
     // Wrap in proxy - for WHERE, we preserve original column names
     const fieldRefProxy = this.createFieldRefProxy(selectedMock, true);
-    this.whereCond = condition(fieldRefProxy);
+    const newCondition = condition(fieldRefProxy);
+    if (this.whereCond) {
+      this.whereCond = andCondition(this.whereCond, newCondition);
+    } else {
+      this.whereCond = newCondition;
+    }
     return this;
   }
 
@@ -1895,16 +1907,24 @@ export class SelectQueryBuilder<TSelection> {
 
     // Add relations as CollectionQueryBuilder or ReferenceQueryBuilder
     for (const [relName, relConfig] of Object.entries(this.schema.relations)) {
+      // Try to get target schema from registry (preferred, has full relations) or targetTableBuilder
+      let targetSchema: TableSchema | undefined;
+      if (this.schemaRegistry) {
+        targetSchema = this.schemaRegistry.get(relConfig.targetTable);
+      }
+      if (!targetSchema && relConfig.targetTableBuilder) {
+        targetSchema = relConfig.targetTableBuilder.build();
+      }
+
       if (relConfig.type === 'many') {
         Object.defineProperty(mock, relName, {
           get: () => {
-            // Don't call build() - force registry lookup to get schema with relations
             return new CollectionQueryBuilder(
               relName,
               relConfig.targetTable,
               relConfig.foreignKey || relConfig.foreignKeys?.[0] || '',
               this.schema.name,
-              undefined,  // Don't pass schema, force registry lookup
+              targetSchema,  // Pass the target schema directly
               this.schemaRegistry  // Pass schema registry for nested resolution
             );
           },
@@ -1915,14 +1935,13 @@ export class SelectQueryBuilder<TSelection> {
         // For single reference (many-to-one), create a ReferenceQueryBuilder
         Object.defineProperty(mock, relName, {
           get: () => {
-            // Don't call build() - force registry lookup to get schema with relations
             const refBuilder = new ReferenceQueryBuilder(
               relName,
               relConfig.targetTable,
               relConfig.foreignKeys || [relConfig.foreignKey || ''],
               relConfig.matches || [],
               relConfig.isMandatory ?? false,
-              undefined,  // Don't pass schema, force registry lookup
+              targetSchema,  // Pass the target schema directly
               this.schemaRegistry  // Pass schema registry for nested resolution
             );
             // Return a mock object that exposes the target table's columns
@@ -3017,12 +3036,15 @@ export class ReferenceQueryBuilder<TItem = any> {
     this.foreignKeys = foreignKeys;
     this.matches = matches;
     this.isMandatory = isMandatory;
-    this.targetTableSchema = targetTableSchema;
     this.schemaRegistry = schemaRegistry;
 
-    // If targetTableSchema is not provided but we have a registry, look it up
-    if (!this.targetTableSchema && this.schemaRegistry) {
+    // Prefer registry lookup (has full relations) over passed schema
+    if (this.schemaRegistry) {
       this.targetTableSchema = this.schemaRegistry.get(targetTable);
+    }
+    // Fallback to passed schema if registry lookup failed
+    if (!this.targetTableSchema) {
+      this.targetTableSchema = targetTableSchema;
     }
   }
 
@@ -3092,19 +3114,26 @@ export class ReferenceQueryBuilder<TItem = any> {
       // Add navigation properties (both collections and references)
       if (this.targetTableSchema.relations) {
         for (const [relName, relConfig] of Object.entries(this.targetTableSchema.relations)) {
+          // Try to get target schema from registry (preferred, has full relations) or targetTableBuilder
+          let nestedTargetSchema: TableSchema | undefined;
+          if (this.schemaRegistry) {
+            nestedTargetSchema = this.schemaRegistry.get(relConfig.targetTable);
+          }
+          if (!nestedTargetSchema && relConfig.targetTableBuilder) {
+            nestedTargetSchema = relConfig.targetTableBuilder.build();
+          }
+
           if (relConfig.type === 'many') {
             // Collection navigation
             Object.defineProperty(mock, relName, {
               get: () => {
-                // Don't call build() - it returns schema without relations
-                // Instead, pass undefined and let CollectionQueryBuilder look it up from registry
                 const fk = relConfig.foreignKey || relConfig.foreignKeys?.[0] || '';
                 return new CollectionQueryBuilder(
                   relName,
                   relConfig.targetTable,
                   fk,
                   this.targetTable,
-                  undefined,  // Don't pass schema, force registry lookup
+                  nestedTargetSchema,  // Pass the target schema directly
                   this.schemaRegistry  // Pass schema registry for nested resolution
                 );
               },
@@ -3115,15 +3144,13 @@ export class ReferenceQueryBuilder<TItem = any> {
             // Reference navigation
             Object.defineProperty(mock, relName, {
               get: () => {
-                // Don't call build() - it returns schema without relations
-                // Instead, pass undefined and let ReferenceQueryBuilder look it up from registry
                 const refBuilder = new ReferenceQueryBuilder(
                   relName,
                   relConfig.targetTable,
                   relConfig.foreignKeys || [relConfig.foreignKey || ''],
                   relConfig.matches || [],
                   relConfig.isMandatory ?? false,
-                  undefined,  // Don't pass schema, force registry lookup
+                  nestedTargetSchema,  // Pass the target schema directly
                   this.schemaRegistry  // Pass schema registry for nested resolution
                 );
                 return refBuilder.createMockTargetRow();
@@ -3189,9 +3216,16 @@ export class CollectionQueryBuilder<TItem = any> {
     this.sourceTable = sourceTable;
     this.schemaRegistry = schemaRegistry;
 
-    // If targetTableSchema is not provided but we have a registry, look it up
-    if (!this.targetTableSchema && this.schemaRegistry) {
-      this.targetTableSchema = this.schemaRegistry.get(targetTable);
+    // Prefer registry lookup (has full relations) over passed schema
+    if (this.schemaRegistry) {
+      const registrySchema = this.schemaRegistry.get(targetTable);
+      if (registrySchema) {
+        this.targetTableSchema = registrySchema;
+      }
+    }
+    // Fallback to passed schema if registry lookup failed
+    if (!this.targetTableSchema) {
+      this.targetTableSchema = targetTableSchema;
     }
   }
 
@@ -3227,11 +3261,17 @@ export class CollectionQueryBuilder<TItem = any> {
 
   /**
    * Filter collection items
+   * Multiple where() calls are chained with AND logic
    */
   where(condition: (item: TItem) => Condition): this {
     // Create mock item with proper schema if available
     const mockItem = this.createMockItem();
-    this.whereCond = condition(mockItem);
+    const newCondition = condition(mockItem);
+    if (this.whereCond) {
+      this.whereCond = andCondition(this.whereCond, newCondition);
+    } else {
+      this.whereCond = newCondition;
+    }
     return this;
   }
 
@@ -3593,11 +3633,23 @@ export class CollectionQueryBuilder<TItem = any> {
         }
       }
     } else {
-      // No selector - select all fields (use * for now, strategy will handle it)
-      selectedFieldConfigs.push({
-        alias: '*',
-        expression: '*',
-      });
+      // No selector - select all fields from the target table schema
+      if (this.targetTableSchema && this.targetTableSchema.columns) {
+        for (const [colName, colBuilder] of Object.entries(this.targetTableSchema.columns)) {
+          const colConfig = (colBuilder as any).build ? (colBuilder as any).build() : colBuilder;
+          const dbColumnName = colConfig.name || colName;
+          selectedFieldConfigs.push({
+            alias: colName,
+            expression: `"${dbColumnName}"`,
+          });
+        }
+      } else {
+        // Fallback: use * (less ideal, may cause issues)
+        selectedFieldConfigs.push({
+          alias: '*',
+          expression: '*',
+        });
+      }
     }
 
     // Step 2: Build WHERE clause SQL (without WHERE keyword)

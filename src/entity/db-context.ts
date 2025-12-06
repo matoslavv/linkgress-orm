@@ -1838,18 +1838,16 @@ export class DbEntityTable<TEntity extends DbEntity> {
       for (const colName of Object.keys(schema.columns)) {
         result[colName] = e[colName];
       }
-      // Add navigation properties
+      // Add navigation properties as enumerable getters
+      // The getter returns the actual navigation builder (CollectionQueryBuilder/ReferenceQueryBuilder)
+      // which allows chained selectors like .select(u => ({ posts: u.posts!.where(...) }))
+      // When the selection is analyzed, the builder is detected and handled appropriately
       for (const relName of Object.keys(schema.relations)) {
-        const relConfig = schema.relations[relName];
-        if (relConfig.type === 'many') {
-          // For collections, use empty array placeholder
-          // (prevents CollectionQueryBuilder evaluation)
-          result[relName] = [];
-        } else {
-          // For references, copy the ReferenceQueryBuilder mock
-          // This allows accessing fields like o.user!.username in chained selectors
-          result[relName] = e[relName];
-        }
+        Object.defineProperty(result, relName, {
+          get: () => e[relName],
+          enumerable: true,  // Enumerable so it's included in Object.entries
+          configurable: true,
+        });
       }
       return result;
     };
@@ -1873,14 +1871,16 @@ export class DbEntityTable<TEntity extends DbEntity> {
       for (const colName of Object.keys(schema.columns)) {
         result[colName] = e[colName];
       }
-      // Add navigation properties
+      // Add navigation properties as enumerable getters
+      // The getter returns the actual navigation builder (CollectionQueryBuilder/ReferenceQueryBuilder)
+      // which allows chained selectors like .select(u => ({ posts: u.posts!.where(...) }))
+      // When the selection is analyzed, the builder is detected and handled appropriately
       for (const relName of Object.keys(schema.relations)) {
-        const relConfig = schema.relations[relName];
-        if (relConfig.type === 'many') {
-          result[relName] = [];
-        } else {
-          result[relName] = e[relName];
-        }
+        Object.defineProperty(result, relName, {
+          get: () => e[relName],
+          enumerable: true,  // Enumerable so it's included in Object.entries
+          configurable: true,
+        });
       }
       return result;
     };
