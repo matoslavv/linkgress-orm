@@ -1459,19 +1459,66 @@ export interface IEntityQueryable<TEntity extends DbEntity> {
   /**
    * Order by field(s)
    */
-  orderBy(selector: (row: TEntity) => any): EntitySelectQueryBuilder<TEntity, TEntity>;
-  orderBy(selector: (row: TEntity) => any[]): EntitySelectQueryBuilder<TEntity, TEntity>;
-  orderBy(selector: (row: TEntity) => Array<[any, 'ASC' | 'DESC']>): EntitySelectQueryBuilder<TEntity, TEntity>;
+  orderBy(selector: (row: TEntity) => any): IEntityQueryable<TEntity>;
+  orderBy(selector: (row: TEntity) => any[]): IEntityQueryable<TEntity>;
+  orderBy(selector: (row: TEntity) => Array<[any, 'ASC' | 'DESC']>): IEntityQueryable<TEntity>;
 
   /**
    * Limit results
    */
-  limit(count: number): EntitySelectQueryBuilder<TEntity, TEntity>;
+  limit(count: number): IEntityQueryable<TEntity>;
 
   /**
    * Offset results
    */
-  offset(count: number): EntitySelectQueryBuilder<TEntity, TEntity>;
+  offset(count: number): IEntityQueryable<TEntity>;
+
+  /**
+   * Add CTEs (Common Table Expressions) to the query
+   */
+  with(...ctes: import('../query/cte-builder').DbCte<any>[]): IEntityQueryable<TEntity>;
+
+  /**
+   * Left join with another table, CTE, or subquery
+   */
+  leftJoin<TRight extends DbEntity, TSelection>(
+    rightTable: DbEntityTable<TRight>,
+    condition: (left: EntityQuery<TEntity>, right: EntityQuery<TRight>) => Condition,
+    selector: (left: EntityQuery<TEntity>, right: EntityQuery<TRight>) => TSelection,
+    alias?: string
+  ): EntitySelectQueryBuilder<TEntity, UnwrapSelection<TSelection>>;
+  leftJoin<TRight extends Record<string, any>, TSelection>(
+    rightTable: import('../query/subquery').Subquery<TRight, 'table'>,
+    condition: (left: EntityQuery<TEntity>, right: TRight) => Condition,
+    selector: (left: EntityQuery<TEntity>, right: TRight) => TSelection,
+    alias: string
+  ): EntitySelectQueryBuilder<TEntity, UnwrapSelection<TSelection>>;
+  leftJoin<TRight extends Record<string, any>, TSelection>(
+    rightTable: import('../query/cte-builder').DbCte<TRight>,
+    condition: (left: EntityQuery<TEntity>, right: ToFieldRefs<TRight>) => Condition,
+    selector: (left: EntityQuery<TEntity>, right: TRight) => TSelection
+  ): EntitySelectQueryBuilder<TEntity, UnwrapSelection<TSelection>>;
+
+  /**
+   * Inner join with another table, CTE, or subquery
+   */
+  innerJoin<TRight extends DbEntity, TSelection>(
+    rightTable: DbEntityTable<TRight>,
+    condition: (left: EntityQuery<TEntity>, right: EntityQuery<TRight>) => Condition,
+    selector: (left: EntityQuery<TEntity>, right: EntityQuery<TRight>) => TSelection,
+    alias?: string
+  ): EntitySelectQueryBuilder<TEntity, UnwrapSelection<TSelection>>;
+  innerJoin<TRight extends Record<string, any>, TSelection>(
+    rightTable: import('../query/subquery').Subquery<TRight, 'table'>,
+    condition: (left: EntityQuery<TEntity>, right: TRight) => Condition,
+    selector: (left: EntityQuery<TEntity>, right: TRight) => TSelection,
+    alias: string
+  ): EntitySelectQueryBuilder<TEntity, UnwrapSelection<TSelection>>;
+  innerJoin<TRight extends Record<string, any>, TSelection>(
+    rightTable: import('../query/cte-builder').DbCte<TRight>,
+    condition: (left: EntityQuery<TEntity>, right: ToFieldRefs<TRight>) => Condition,
+    selector: (left: EntityQuery<TEntity>, right: TRight) => TSelection
+  ): EntitySelectQueryBuilder<TEntity, UnwrapSelection<TSelection>>;
 
   /**
    * Execute query and return all results
@@ -1876,10 +1923,10 @@ export class DbEntityTable<TEntity extends DbEntity> {
   /**
    * Order by field(s)
    */
-  orderBy(selector: (row: TEntity) => any): EntitySelectQueryBuilder<TEntity, TEntity>;
-  orderBy(selector: (row: TEntity) => any[]): EntitySelectQueryBuilder<TEntity, TEntity>;
-  orderBy(selector: (row: TEntity) => Array<[any, 'ASC' | 'DESC']>): EntitySelectQueryBuilder<TEntity, TEntity>;
-  orderBy(selector: (row: TEntity) => any | any[] | Array<[any, 'ASC' | 'DESC']>): EntitySelectQueryBuilder<TEntity, TEntity> {
+  orderBy(selector: (row: TEntity) => any): IEntityQueryable<TEntity>;
+  orderBy(selector: (row: TEntity) => any[]): IEntityQueryable<TEntity>;
+  orderBy(selector: (row: TEntity) => Array<[any, 'ASC' | 'DESC']>): IEntityQueryable<TEntity>;
+  orderBy(selector: (row: TEntity) => any | any[] | Array<[any, 'ASC' | 'DESC']>): IEntityQueryable<TEntity> {
     const schema = this._getSchema();
     const allColumnsSelector = (e: any) => {
       const result: any = {};
@@ -1890,13 +1937,13 @@ export class DbEntityTable<TEntity extends DbEntity> {
     };
 
     const qb = this.context.getTable(this.tableName).select(allColumnsSelector) as any;
-    return qb.orderBy(selector) as EntitySelectQueryBuilder<TEntity, TEntity>;
+    return qb.orderBy(selector) as IEntityQueryable<TEntity>;
   }
 
   /**
    * Limit results
    */
-  limit(count: number): EntitySelectQueryBuilder<TEntity, TEntity> {
+  limit(count: number): IEntityQueryable<TEntity> {
     const schema = this._getSchema();
     const allColumnsSelector = (e: any) => {
       const result: any = {};
@@ -1907,13 +1954,13 @@ export class DbEntityTable<TEntity extends DbEntity> {
     };
 
     const qb = this.context.getTable(this.tableName).select(allColumnsSelector) as any;
-    return qb.limit(count) as EntitySelectQueryBuilder<TEntity, TEntity>;
+    return qb.limit(count) as IEntityQueryable<TEntity>;
   }
 
   /**
    * Offset results
    */
-  offset(count: number): EntitySelectQueryBuilder<TEntity, TEntity> {
+  offset(count: number): IEntityQueryable<TEntity> {
     const schema = this._getSchema();
     const allColumnsSelector = (e: any) => {
       const result: any = {};
@@ -1924,7 +1971,7 @@ export class DbEntityTable<TEntity extends DbEntity> {
     };
 
     const qb = this.context.getTable(this.tableName).select(allColumnsSelector) as any;
-    return qb.offset(count) as EntitySelectQueryBuilder<TEntity, TEntity>;
+    return qb.offset(count) as IEntityQueryable<TEntity>;
   }
 
   /**
@@ -1956,7 +2003,7 @@ export class DbEntityTable<TEntity extends DbEntity> {
    */
   where(
     condition: (entity: EntityQuery<TEntity>) => any
-  ): EntitySelectQueryBuilder<TEntity, TEntity> {
+  ): IEntityQueryable<TEntity> {
     const schema = this._getSchema();
 
     // Create a selector that selects all columns with navigation property access
@@ -1983,13 +2030,13 @@ export class DbEntityTable<TEntity extends DbEntity> {
     const queryBuilder = this.context.getTable(this.tableName)
       .where(condition as any)
       .select(allColumnsSelector);
-    return queryBuilder as any as EntitySelectQueryBuilder<TEntity, TEntity>;
+    return queryBuilder as any as IEntityQueryable<TEntity>;
   }
 
   /**
    * Add CTEs (Common Table Expressions) to the query
    */
-  with(...ctes: DbCte<any>[]): EntitySelectQueryBuilder<TEntity, TEntity> {
+  with(...ctes: DbCte<any>[]): IEntityQueryable<TEntity> {
     const schema = this._getSchema();
 
     // Create a selector that selects all columns with navigation property access
@@ -2016,7 +2063,7 @@ export class DbEntityTable<TEntity extends DbEntity> {
     const queryBuilder = this.context.getTable(this.tableName)
       .with(...ctes)
       .select(allColumnsSelector);
-    return queryBuilder as any as EntitySelectQueryBuilder<TEntity, TEntity>;
+    return queryBuilder as any as IEntityQueryable<TEntity>;
   }
 
   /**
@@ -2037,8 +2084,16 @@ export class DbEntityTable<TEntity extends DbEntity> {
     selector: (left: EntityQuery<TEntity>, right: TRight) => TSelection,
     alias: string
   ): EntitySelectQueryBuilder<TEntity, UnwrapSelection<TSelection>>;
+  /**
+   * Left join with a CTE
+   */
+  leftJoin<TRight extends Record<string, any>, TSelection>(
+    rightTable: import('../query/cte-builder').DbCte<TRight>,
+    condition: (left: EntityQuery<TEntity>, right: ToFieldRefs<TRight>) => Condition,
+    selector: (left: EntityQuery<TEntity>, right: TRight) => TSelection
+  ): EntitySelectQueryBuilder<TEntity, UnwrapSelection<TSelection>>;
   leftJoin<TRight, TSelection>(
-    rightTable: DbEntityTable<any> | import('../query/subquery').Subquery<TRight, 'table'>,
+    rightTable: DbEntityTable<any> | import('../query/subquery').Subquery<TRight, 'table'> | import('../query/cte-builder').DbCte<TRight>,
     condition: (left: EntityQuery<TEntity>, right: any) => Condition,
     selector: (left: EntityQuery<TEntity>, right: any) => TSelection,
     alias?: string
@@ -2065,8 +2120,16 @@ export class DbEntityTable<TEntity extends DbEntity> {
     selector: (left: EntityQuery<TEntity>, right: TRight) => TSelection,
     alias: string
   ): EntitySelectQueryBuilder<TEntity, UnwrapSelection<TSelection>>;
+  /**
+   * Inner join with a CTE
+   */
+  innerJoin<TRight extends Record<string, any>, TSelection>(
+    rightTable: import('../query/cte-builder').DbCte<TRight>,
+    condition: (left: EntityQuery<TEntity>, right: ToFieldRefs<TRight>) => Condition,
+    selector: (left: EntityQuery<TEntity>, right: TRight) => TSelection
+  ): EntitySelectQueryBuilder<TEntity, UnwrapSelection<TSelection>>;
   innerJoin<TRight, TSelection>(
-    rightTable: DbEntityTable<any> | import('../query/subquery').Subquery<TRight, 'table'>,
+    rightTable: DbEntityTable<any> | import('../query/subquery').Subquery<TRight, 'table'> | import('../query/cte-builder').DbCte<TRight>,
     condition: (left: EntityQuery<TEntity>, right: any) => Condition,
     selector: (left: EntityQuery<TEntity>, right: any) => TSelection,
     alias?: string
