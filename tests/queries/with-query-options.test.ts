@@ -80,7 +80,7 @@ describe('withQueryOptions Method', () => {
   });
 
   describe('Collection strategy control', () => {
-    test('should use JSONB strategy when specified', async () => {
+    test('should use CTE strategy when specified', async () => {
       const db = createTestDatabase({ collectionStrategy: 'temptable' });
       await setupDatabase(db);
       await seedTestData(db);
@@ -91,7 +91,7 @@ describe('withQueryOptions Method', () => {
 
       try {
         const results = await db.users
-          .withQueryOptions({ logQueries: true, collectionStrategy: 'jsonb' })
+          .withQueryOptions({ logQueries: true, collectionStrategy: 'cte' })
           .select(u => ({
             userId: u.id,
             username: u.username,
@@ -113,7 +113,7 @@ describe('withQueryOptions Method', () => {
     });
 
     test('should use temp table strategy when specified', async () => {
-      const db = createTestDatabase({ collectionStrategy: 'jsonb' });
+      const db = createTestDatabase({ collectionStrategy: 'cte' });
       await setupDatabase(db);
       await seedTestData(db);
 
@@ -150,7 +150,7 @@ describe('withQueryOptions Method', () => {
         await seedTestData(db);
 
         const results = await db.users
-          .withQueryOptions({ collectionStrategy: 'jsonb' })
+          .withQueryOptions({ collectionStrategy: 'cte' })
           .select(u => ({
             userId: u.id,
             username: u.username,
@@ -203,7 +203,7 @@ describe('withQueryOptions Method', () => {
         await seedTestData(db);
 
         const results = await db.users
-          .withQueryOptions({ collectionStrategy: 'jsonb' })
+          .withQueryOptions({ collectionStrategy: 'cte' })
           .select(u => ({
             userId: u.id,
             username: u.username,
@@ -232,7 +232,7 @@ describe('withQueryOptions Method', () => {
         await seedTestData(db);
 
         const results = await db.users
-          .withQueryOptions({ collectionStrategy: 'jsonb' }) // Use JSONB for limit
+          .withQueryOptions({ collectionStrategy: 'cte' }) // Use CTE for limit
           .select(u => ({
             userId: u.id,
             username: u.username,
@@ -255,7 +255,7 @@ describe('withQueryOptions Method', () => {
         await seedTestData(db);
 
         const results = await db.users
-          .withQueryOptions({ collectionStrategy: 'jsonb' })
+          .withQueryOptions({ collectionStrategy: 'cte' })
           .select(u => ({
             userId: u.id,
             username: u.username,
@@ -318,7 +318,7 @@ describe('withQueryOptions Method', () => {
         await seedTestData(db);
 
         const results = await db.users
-          .withQueryOptions({ collectionStrategy: 'jsonb' })
+          .withQueryOptions({ collectionStrategy: 'cte' })
           .select(u => ({
             userId: u.id,
             username: u.username,
@@ -355,7 +355,7 @@ describe('withQueryOptions Method', () => {
         await seedTestData(db);
 
         const results = await db.users
-          .withQueryOptions({ collectionStrategy: 'jsonb' })
+          .withQueryOptions({ collectionStrategy: 'cte' })
           .select(u => ({
             userId: u.id,
             username: u.username,
@@ -428,7 +428,7 @@ describe('withQueryOptions Method', () => {
         await seedTestData(db);
 
         const results = await db.users
-          .withQueryOptions({ collectionStrategy: 'jsonb' })
+          .withQueryOptions({ collectionStrategy: 'cte' })
           .select(u => ({
             id: u.id,
             username: u.username,
@@ -482,7 +482,7 @@ describe('withQueryOptions Method', () => {
         await seedTestData(db);
 
         const results = await db.users
-          .withQueryOptions({ collectionStrategy: 'jsonb' })
+          .withQueryOptions({ collectionStrategy: 'cte' })
           .select(u => ({
             id: u.id,
             username: u.username,
@@ -548,7 +548,7 @@ describe('withQueryOptions Method', () => {
         await seedTestData(db);
 
         const results = await db.users
-          .withQueryOptions({ collectionStrategy: 'jsonb' })
+          .withQueryOptions({ collectionStrategy: 'cte' })
           .select(u => ({
             userId: u.id,
             username: u.username,
@@ -580,7 +580,7 @@ describe('withQueryOptions Method', () => {
         await seedTestData(db);
 
         const results = await db.users
-          .withQueryOptions({ collectionStrategy: 'jsonb' }) // Use JSONB for limit
+          .withQueryOptions({ collectionStrategy: 'cte' }) // Use CTE for limit
           .select(u => ({
             userId: u.id,
             username: u.username,
@@ -616,7 +616,7 @@ describe('withQueryOptions Method', () => {
         await seedTestData(db);
 
         const results = await db.users
-          .withQueryOptions({ collectionStrategy: 'jsonb' })
+          .withQueryOptions({ collectionStrategy: 'cte' })
           .select(u => ({
             userId: u.id,
             username: u.username,
@@ -644,14 +644,14 @@ describe('withQueryOptions Method', () => {
 
   describe('Strategy comparison with withQueryOptions', () => {
     test('should produce identical results for JSONB and temp table strategies', async () => {
-      const db = createTestDatabase({ collectionStrategy: 'jsonb' });
+      const db = createTestDatabase({ collectionStrategy: 'cte' });
       await setupDatabase(db);
       await seedTestData(db);
 
       try {
         // Get results with JSONB
         const jsonbResults = await db.users
-          .withQueryOptions({ collectionStrategy: 'jsonb' })
+          .withQueryOptions({ collectionStrategy: 'cte' })
           .select(u => ({
             userId: u.id,
             username: u.username,
@@ -705,7 +705,7 @@ describe('withQueryOptions Method', () => {
 
   describe('Error handling', () => {
     test('should not throw when using withQueryOptions on empty database', async () => {
-      const db = createTestDatabase({ collectionStrategy: 'jsonb' });
+      const db = createTestDatabase({ collectionStrategy: 'cte' });
       await setupDatabase(db);
 
       try {
@@ -725,7 +725,7 @@ describe('withQueryOptions Method', () => {
     });
 
     test('should work with null aggregates', async () => {
-      const db = createTestDatabase({ collectionStrategy: 'jsonb' });
+      const db = createTestDatabase({ collectionStrategy: 'cte' });
       await setupDatabase(db);
       await seedTestData(db);
 

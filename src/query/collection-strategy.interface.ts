@@ -14,7 +14,7 @@ export interface SelectedField {
 /**
  * Collection aggregation strategy type
  */
-export type CollectionStrategyType = 'jsonb' | 'temptable';
+export type CollectionStrategyType = 'cte' | 'temptable';
 
 /**
  * Result of building a collection aggregation

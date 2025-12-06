@@ -4,13 +4,13 @@ import { assertType } from '../utils/type-tester';
 
 describe('Collection Strategy Comparison', () => {
   describe('Basic collection queries', () => {
-    test('should return identical results for users with posts (JSONB vs Temp Table)', async () => {
-      // Test with JSONB strategy
-      const jsonbDb = createTestDatabase({ collectionStrategy: 'jsonb' });
-      await setupDatabase(jsonbDb);
-      await seedTestData(jsonbDb);
+    test('should return identical results for users with posts (CTE vs Temp Table)', async () => {
+      // Test with CTE strategy
+      const cteDb = createTestDatabase({ collectionStrategy: 'cte' });
+      await setupDatabase(cteDb);
+      await seedTestData(cteDb);
 
-      const jsonbResults = await jsonbDb.users
+      const cteResults = await cteDb.users
         .select(u => ({
           userId: u.id,
           username: u.username,
@@ -24,7 +24,7 @@ describe('Collection Strategy Comparison', () => {
         }))
         .toList();
 
-      await cleanupDatabase(jsonbDb);
+      await cleanupDatabase(cteDb);
 
       // Test with Temp Table strategy
       const tempTableDb = createTestDatabase({ collectionStrategy: 'temptable' });
@@ -48,11 +48,11 @@ describe('Collection Strategy Comparison', () => {
       await cleanupDatabase(tempTableDb);
 
       // Verify results are identical
-      expect(jsonbResults.length).toBe(tempTableResults.length);
-      expect(jsonbResults.length).toBeGreaterThan(0);
+      expect(cteResults.length).toBe(tempTableResults.length);
+      expect(cteResults.length).toBeGreaterThan(0);
 
       // Type assertions
-      jsonbResults.forEach(u => {
+      cteResults.forEach(u => {
         assertType<number, typeof u.userId>(u.userId);
         assertType<string, typeof u.username>(u.username);
         assertType<{ postId: number; title: string | undefined; views: number }[], typeof u.posts>(u.posts);
@@ -63,8 +63,8 @@ describe('Collection Strategy Comparison', () => {
         assertType<{ postId: number; title: string | undefined; views: number }[], typeof u.posts>(u.posts);
       });
 
-      for (let i = 0; i < jsonbResults.length; i++) {
-        const jsonbUser = jsonbResults[i];
+      for (let i = 0; i < cteResults.length; i++) {
+        const jsonbUser = cteResults[i];
         const tempTableUser = tempTableResults[i];
 
         expect(jsonbUser.userId).toBe(tempTableUser.userId);
@@ -78,12 +78,12 @@ describe('Collection Strategy Comparison', () => {
     });
 
     test('should return identical results for filtered collections', async () => {
-      // Test with JSONB strategy
-      const jsonbDb = createTestDatabase({ collectionStrategy: 'jsonb' });
-      await setupDatabase(jsonbDb);
-      await seedTestData(jsonbDb);
+      // Test with CTE strategy
+      const cteDb = createTestDatabase({ collectionStrategy: 'cte' });
+      await setupDatabase(cteDb);
+      await seedTestData(cteDb);
 
-      const jsonbResults = await jsonbDb.users
+      const cteResults = await cteDb.users
         .select(u => ({
           userId: u.id,
           username: u.username,
@@ -97,7 +97,7 @@ describe('Collection Strategy Comparison', () => {
         }))
         .toList();
 
-      await cleanupDatabase(jsonbDb);
+      await cleanupDatabase(cteDb);
 
       // Test with Temp Table strategy
       const tempTableDb = createTestDatabase({ collectionStrategy: 'temptable' });
@@ -121,7 +121,7 @@ describe('Collection Strategy Comparison', () => {
       await cleanupDatabase(tempTableDb);
 
       // Type assertions
-      jsonbResults.forEach(u => {
+      cteResults.forEach(u => {
         assertType<number, typeof u.userId>(u.userId);
         assertType<string, typeof u.username>(u.username);
         assertType<{ title: string | undefined; views: number }[], typeof u.highViewPosts>(u.highViewPosts);
@@ -133,18 +133,18 @@ describe('Collection Strategy Comparison', () => {
       });
 
       // Verify results are identical
-      expect(jsonbResults).toEqual(tempTableResults);
+      expect(cteResults).toEqual(tempTableResults);
     });
   });
 
   describe('Collection aggregations', () => {
     test('should return identical count results', async () => {
-      // Test with JSONB strategy
-      const jsonbDb = createTestDatabase({ collectionStrategy: 'jsonb' });
-      await setupDatabase(jsonbDb);
-      await seedTestData(jsonbDb);
+      // Test with CTE strategy
+      const cteDb = createTestDatabase({ collectionStrategy: 'cte' });
+      await setupDatabase(cteDb);
+      await seedTestData(cteDb);
 
-      const jsonbResults = await jsonbDb.users
+      const cteResults = await cteDb.users
         .select(u => ({
           userId: u.id,
           username: u.username,
@@ -152,7 +152,7 @@ describe('Collection Strategy Comparison', () => {
         }))
         .toList();
 
-      await cleanupDatabase(jsonbDb);
+      await cleanupDatabase(cteDb);
 
       // Test with Temp Table strategy
       const tempTableDb = createTestDatabase({ collectionStrategy: 'temptable' });
@@ -170,7 +170,7 @@ describe('Collection Strategy Comparison', () => {
       await cleanupDatabase(tempTableDb);
 
       // Type assertions
-      jsonbResults.forEach(u => {
+      cteResults.forEach(u => {
         assertType<number, typeof u.userId>(u.userId);
         assertType<string, typeof u.username>(u.username);
         assertType<number, typeof u.postCount>(u.postCount);
@@ -182,16 +182,16 @@ describe('Collection Strategy Comparison', () => {
       });
 
       // Verify results are identical
-      expect(jsonbResults).toEqual(tempTableResults);
+      expect(cteResults).toEqual(tempTableResults);
     });
 
     test('should return identical max/min results', async () => {
-      // Test with JSONB strategy
-      const jsonbDb = createTestDatabase({ collectionStrategy: 'jsonb' });
-      await setupDatabase(jsonbDb);
-      await seedTestData(jsonbDb);
+      // Test with CTE strategy
+      const cteDb = createTestDatabase({ collectionStrategy: 'cte' });
+      await setupDatabase(cteDb);
+      await seedTestData(cteDb);
 
-      const jsonbResults = await jsonbDb.users
+      const cteResults = await cteDb.users
         .select(u => ({
           userId: u.id,
           username: u.username,
@@ -200,7 +200,7 @@ describe('Collection Strategy Comparison', () => {
         }))
         .toList();
 
-      await cleanupDatabase(jsonbDb);
+      await cleanupDatabase(cteDb);
 
       // Test with Temp Table strategy
       const tempTableDb = createTestDatabase({ collectionStrategy: 'temptable' });
@@ -219,7 +219,7 @@ describe('Collection Strategy Comparison', () => {
       await cleanupDatabase(tempTableDb);
 
       // Type assertions
-      jsonbResults.forEach(u => {
+      cteResults.forEach(u => {
         assertType<number, typeof u.userId>(u.userId);
         assertType<string, typeof u.username>(u.username);
         assertType<number | null, typeof u.maxViews>(u.maxViews);
@@ -233,16 +233,16 @@ describe('Collection Strategy Comparison', () => {
       });
 
       // Verify results are identical
-      expect(jsonbResults).toEqual(tempTableResults);
+      expect(cteResults).toEqual(tempTableResults);
     });
 
     test('should return identical sum results', async () => {
-      // Test with JSONB strategy
-      const jsonbDb = createTestDatabase({ collectionStrategy: 'jsonb' });
-      await setupDatabase(jsonbDb);
-      await seedTestData(jsonbDb);
+      // Test with CTE strategy
+      const cteDb = createTestDatabase({ collectionStrategy: 'cte' });
+      await setupDatabase(cteDb);
+      await seedTestData(cteDb);
 
-      const jsonbResults = await jsonbDb.users
+      const cteResults = await cteDb.users
         .select(u => ({
           userId: u.id,
           username: u.username,
@@ -250,7 +250,7 @@ describe('Collection Strategy Comparison', () => {
         }))
         .toList();
 
-      await cleanupDatabase(jsonbDb);
+      await cleanupDatabase(cteDb);
 
       // Test with Temp Table strategy
       const tempTableDb = createTestDatabase({ collectionStrategy: 'temptable' });
@@ -268,7 +268,7 @@ describe('Collection Strategy Comparison', () => {
       await cleanupDatabase(tempTableDb);
 
       // Type assertions
-      jsonbResults.forEach(u => {
+      cteResults.forEach(u => {
         assertType<number, typeof u.userId>(u.userId);
         assertType<string, typeof u.username>(u.username);
         assertType<number | null, typeof u.totalViews>(u.totalViews);
@@ -280,18 +280,18 @@ describe('Collection Strategy Comparison', () => {
       });
 
       // Verify results are identical
-      expect(jsonbResults).toEqual(tempTableResults);
+      expect(cteResults).toEqual(tempTableResults);
     });
   });
 
   describe('Collection with limit/offset', () => {
     test('should return identical results with limit', async () => {
-      // Test with JSONB strategy
-      const jsonbDb = createTestDatabase({ collectionStrategy: 'jsonb' });
-      await setupDatabase(jsonbDb);
-      await seedTestData(jsonbDb);
+      // Test with CTE strategy
+      const cteDb = createTestDatabase({ collectionStrategy: 'cte' });
+      await setupDatabase(cteDb);
+      await seedTestData(cteDb);
 
-      const jsonbResults = await jsonbDb.users
+      const cteResults = await cteDb.users
         .select(u => ({
           userId: u.id,
           username: u.username,
@@ -306,7 +306,7 @@ describe('Collection Strategy Comparison', () => {
         }))
         .toList();
 
-      await cleanupDatabase(jsonbDb);
+      await cleanupDatabase(cteDb);
 
       // Test with Temp Table strategy
       const tempTableDb = createTestDatabase({ collectionStrategy: 'temptable' });
@@ -331,16 +331,16 @@ describe('Collection Strategy Comparison', () => {
       await cleanupDatabase(tempTableDb);
 
       // Verify results are identical
-      expect(jsonbResults).toEqual(tempTableResults);
+      expect(cteResults).toEqual(tempTableResults);
     });
 
     test('should return identical results with offset', async () => {
-      // Test with JSONB strategy
-      const jsonbDb = createTestDatabase({ collectionStrategy: 'jsonb' });
-      await setupDatabase(jsonbDb);
-      await seedTestData(jsonbDb);
+      // Test with CTE strategy
+      const cteDb = createTestDatabase({ collectionStrategy: 'cte' });
+      await setupDatabase(cteDb);
+      await seedTestData(cteDb);
 
-      const jsonbResults = await jsonbDb.users
+      const cteResults = await cteDb.users
         .select(u => ({
           userId: u.id,
           username: u.username,
@@ -356,7 +356,7 @@ describe('Collection Strategy Comparison', () => {
         }))
         .toList();
 
-      await cleanupDatabase(jsonbDb);
+      await cleanupDatabase(cteDb);
 
       // Test with Temp Table strategy
       const tempTableDb = createTestDatabase({ collectionStrategy: 'temptable' });
@@ -382,18 +382,18 @@ describe('Collection Strategy Comparison', () => {
       await cleanupDatabase(tempTableDb);
 
       // Verify results are identical
-      expect(jsonbResults).toEqual(tempTableResults);
+      expect(cteResults).toEqual(tempTableResults);
     });
   });
 
   describe('Array aggregations', () => {
     test('should return identical toStringList results', async () => {
-      // Test with JSONB strategy
-      const jsonbDb = createTestDatabase({ collectionStrategy: 'jsonb' });
-      await setupDatabase(jsonbDb);
-      await seedTestData(jsonbDb);
+      // Test with CTE strategy
+      const cteDb = createTestDatabase({ collectionStrategy: 'cte' });
+      await setupDatabase(cteDb);
+      await seedTestData(cteDb);
 
-      const jsonbResults = await jsonbDb.users
+      const cteResults = await cteDb.users
         .select(u => ({
           userId: u.id,
           username: u.username,
@@ -401,7 +401,7 @@ describe('Collection Strategy Comparison', () => {
         }))
         .toList();
 
-      await cleanupDatabase(jsonbDb);
+      await cleanupDatabase(cteDb);
 
       // Test with Temp Table strategy
       const tempTableDb = createTestDatabase({ collectionStrategy: 'temptable' });
@@ -419,7 +419,7 @@ describe('Collection Strategy Comparison', () => {
       await cleanupDatabase(tempTableDb);
 
       // Type assertions
-      jsonbResults.forEach(u => {
+      cteResults.forEach(u => {
         assertType<number, typeof u.userId>(u.userId);
         assertType<string, typeof u.username>(u.username);
         assertType<string[], typeof u.postTitles>(u.postTitles);
@@ -431,20 +431,20 @@ describe('Collection Strategy Comparison', () => {
       });
 
       // Sort arrays to ensure consistent ordering for comparison
-      jsonbResults.forEach(u => u.postTitles.sort());
+      cteResults.forEach(u => u.postTitles.sort());
       tempTableResults.forEach(u => u.postTitles.sort());
 
       // Verify results are identical
-      expect(jsonbResults).toEqual(tempTableResults);
+      expect(cteResults).toEqual(tempTableResults);
     });
 
     test('should return identical toNumberList results', async () => {
-      // Test with JSONB strategy
-      const jsonbDb = createTestDatabase({ collectionStrategy: 'jsonb' });
-      await setupDatabase(jsonbDb);
-      await seedTestData(jsonbDb);
+      // Test with CTE strategy
+      const cteDb = createTestDatabase({ collectionStrategy: 'cte' });
+      await setupDatabase(cteDb);
+      await seedTestData(cteDb);
 
-      const jsonbResults = await jsonbDb.users
+      const cteResults = await cteDb.users
         .select(u => ({
           userId: u.id,
           username: u.username,
@@ -452,7 +452,7 @@ describe('Collection Strategy Comparison', () => {
         }))
         .toList();
 
-      await cleanupDatabase(jsonbDb);
+      await cleanupDatabase(cteDb);
 
       // Test with Temp Table strategy
       const tempTableDb = createTestDatabase({ collectionStrategy: 'temptable' });
@@ -470,7 +470,7 @@ describe('Collection Strategy Comparison', () => {
       await cleanupDatabase(tempTableDb);
 
       // Type assertions
-      jsonbResults.forEach(u => {
+      cteResults.forEach(u => {
         assertType<number, typeof u.userId>(u.userId);
         assertType<string, typeof u.username>(u.username);
         assertType<number[], typeof u.allViews>(u.allViews);
@@ -482,22 +482,22 @@ describe('Collection Strategy Comparison', () => {
       });
 
       // Sort arrays to ensure consistent ordering for comparison
-      jsonbResults.forEach(u => u.allViews.sort((a, b) => a - b));
+      cteResults.forEach(u => u.allViews.sort((a, b) => a - b));
       tempTableResults.forEach(u => u.allViews.sort((a, b) => a - b));
 
       // Verify results are identical
-      expect(jsonbResults).toEqual(tempTableResults);
+      expect(cteResults).toEqual(tempTableResults);
     });
   });
 
   describe('Multiple collections', () => {
     test('should return identical results with multiple collections', async () => {
-      // Test with JSONB strategy
-      const jsonbDb = createTestDatabase({ collectionStrategy: 'jsonb' });
-      await setupDatabase(jsonbDb);
-      await seedTestData(jsonbDb);
+      // Test with CTE strategy
+      const cteDb = createTestDatabase({ collectionStrategy: 'cte' });
+      await setupDatabase(cteDb);
+      await seedTestData(cteDb);
 
-      const jsonbResults = await jsonbDb.users
+      const cteResults = await cteDb.users
         .select(u => ({
           userId: u.id,
           username: u.username,
@@ -511,7 +511,7 @@ describe('Collection Strategy Comparison', () => {
         }))
         .toList();
 
-      await cleanupDatabase(jsonbDb);
+      await cleanupDatabase(cteDb);
 
       // Test with Temp Table strategy
       const tempTableDb = createTestDatabase({ collectionStrategy: 'temptable' });
@@ -535,7 +535,7 @@ describe('Collection Strategy Comparison', () => {
       await cleanupDatabase(tempTableDb);
 
       // Type assertions
-      jsonbResults.forEach(u => {
+      cteResults.forEach(u => {
         assertType<number, typeof u.userId>(u.userId);
         assertType<string, typeof u.username>(u.username);
         assertType<{ title: string | undefined }[], typeof u.posts>(u.posts);
@@ -549,7 +549,7 @@ describe('Collection Strategy Comparison', () => {
       });
 
       // Sort arrays to ensure consistent ordering for comparison
-      jsonbResults.forEach(u => {
+      cteResults.forEach(u => {
         u.posts.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
         u.orders.sort((a, b) => a.totalAmount - b.totalAmount);
       });
@@ -559,18 +559,18 @@ describe('Collection Strategy Comparison', () => {
       });
 
       // Verify results are identical
-      expect(jsonbResults).toEqual(tempTableResults);
+      expect(cteResults).toEqual(tempTableResults);
     });
   });
 
   describe('Empty collections', () => {
     test('should return identical results for users with no posts', async () => {
-      // Test with JSONB strategy
-      const jsonbDb = createTestDatabase({ collectionStrategy: 'jsonb' });
-      await setupDatabase(jsonbDb);
-      await seedTestData(jsonbDb);
+      // Test with CTE strategy
+      const cteDb = createTestDatabase({ collectionStrategy: 'cte' });
+      await setupDatabase(cteDb);
+      await seedTestData(cteDb);
 
-      const jsonbResults = await jsonbDb.users
+      const cteResults = await cteDb.users
         .select(u => ({
           userId: u.id,
           username: u.username,
@@ -580,7 +580,7 @@ describe('Collection Strategy Comparison', () => {
         }))
         .toList();
 
-      await cleanupDatabase(jsonbDb);
+      await cleanupDatabase(cteDb);
 
       // Test with Temp Table strategy
       const tempTableDb = createTestDatabase({ collectionStrategy: 'temptable' });
@@ -600,7 +600,7 @@ describe('Collection Strategy Comparison', () => {
       await cleanupDatabase(tempTableDb);
 
       // Type assertions
-      jsonbResults.forEach(u => {
+      cteResults.forEach(u => {
         assertType<number, typeof u.userId>(u.userId);
         assertType<string, typeof u.username>(u.username);
         assertType<{ title: string | undefined }[], typeof u.posts>(u.posts);
@@ -612,10 +612,10 @@ describe('Collection Strategy Comparison', () => {
       });
 
       // Verify results are identical
-      expect(jsonbResults).toEqual(tempTableResults);
+      expect(cteResults).toEqual(tempTableResults);
 
       // Charlie (user 3) should have no posts
-      const charlie = jsonbResults.find(u => u.username === 'charlie');
+      const charlie = cteResults.find(u => u.username === 'charlie');
       expect(charlie).toBeDefined();
       expect(charlie!.posts).toEqual([]);
     });
@@ -623,12 +623,12 @@ describe('Collection Strategy Comparison', () => {
 
   describe('DISTINCT collections', () => {
     test('should return identical selectDistinct results', async () => {
-      // Test with JSONB strategy
-      const jsonbDb = createTestDatabase({ collectionStrategy: 'jsonb' });
-      await setupDatabase(jsonbDb);
-      await seedTestData(jsonbDb);
+      // Test with CTE strategy
+      const cteDb = createTestDatabase({ collectionStrategy: 'cte' });
+      await setupDatabase(cteDb);
+      await seedTestData(cteDb);
 
-      const jsonbResults = await jsonbDb.users
+      const cteResults = await cteDb.users
         .select(u => ({
           userId: u.id,
           username: u.username,
@@ -638,7 +638,7 @@ describe('Collection Strategy Comparison', () => {
         }))
         .toList();
 
-      await cleanupDatabase(jsonbDb);
+      await cleanupDatabase(cteDb);
 
       // Test with Temp Table strategy
       const tempTableDb = createTestDatabase({ collectionStrategy: 'temptable' });
@@ -658,7 +658,7 @@ describe('Collection Strategy Comparison', () => {
       await cleanupDatabase(tempTableDb);
 
       // Type assertions
-      jsonbResults.forEach(u => {
+      cteResults.forEach(u => {
         assertType<number, typeof u.userId>(u.userId);
         assertType<string, typeof u.username>(u.username);
         assertType<{ title: string | undefined }[], typeof u.distinctTitles>(u.distinctTitles);
@@ -670,7 +670,7 @@ describe('Collection Strategy Comparison', () => {
       });
 
       // Verify results are identical
-      expect(jsonbResults).toEqual(tempTableResults);
+      expect(cteResults).toEqual(tempTableResults);
     });
   });
 });

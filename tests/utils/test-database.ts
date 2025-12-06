@@ -9,7 +9,7 @@ import { Order } from '../../debug/model/order';
  */
 export function createTestDatabase(options?: {
   logQueries?: boolean;
-  collectionStrategy?: 'jsonb' | 'temptable';
+  collectionStrategy?: 'cte' | 'temptable';
 }): AppDatabase {
   const client = new PgClient({
     host: process.env.DB_HOST || 'localhost',
@@ -22,7 +22,7 @@ export function createTestDatabase(options?: {
   return new AppDatabase(client, {
     logQueries: options?.logQueries ?? false,
     logParameters: options?.logQueries ?? false,
-    collectionStrategy: options?.collectionStrategy ?? 'jsonb',
+    collectionStrategy: options?.collectionStrategy ?? 'cte',
   });
 }
 
@@ -117,7 +117,7 @@ export async function withDatabase<T>(
   testFn: (db: AppDatabase) => Promise<T>,
   options?: {
     logQueries?: boolean;
-    collectionStrategy?: 'jsonb' | 'temptable';
+    collectionStrategy?: 'cte' | 'temptable';
   }
 ): Promise<T> {
   const db = createTestDatabase(options);

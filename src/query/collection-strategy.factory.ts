@@ -1,5 +1,5 @@
 import { ICollectionStrategy, CollectionStrategyType } from './collection-strategy.interface';
-import { JsonbCollectionStrategy } from './strategies/jsonb-collection-strategy';
+import { CteCollectionStrategy } from './strategies/cte-collection-strategy';
 import { TempTableCollectionStrategy } from './strategies/temptable-collection-strategy';
 
 /**
@@ -14,8 +14,8 @@ export class CollectionStrategyFactory {
   static getStrategy(type: CollectionStrategyType): ICollectionStrategy {
     if (!this.strategies.has(type)) {
       switch (type) {
-        case 'jsonb':
-          this.strategies.set(type, new JsonbCollectionStrategy());
+        case 'cte':
+          this.strategies.set(type, new CteCollectionStrategy());
           break;
         case 'temptable':
           this.strategies.set(type, new TempTableCollectionStrategy());

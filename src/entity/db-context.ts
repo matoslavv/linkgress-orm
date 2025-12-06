@@ -28,7 +28,7 @@ import {
 /**
  * Collection aggregation strategy type
  */
-export type CollectionStrategyType = 'jsonb' | 'temptable';
+export type CollectionStrategyType = 'cte' | 'temptable';
 
 /**
  * Order direction for orderBy clauses
@@ -64,7 +64,7 @@ export interface QueryOptions {
   logExecutionTime?: boolean;
   /** Log query parameters */
   logParameters?: boolean;
-  /** Collection aggregation strategy (default: 'jsonb') */
+  /** Collection aggregation strategy (default: 'cte') */
   collectionStrategy?: CollectionStrategyType;
   /**
    * Disable automatic mapper transformations (fromDriver/toDriver).

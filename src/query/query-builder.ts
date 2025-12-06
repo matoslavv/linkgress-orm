@@ -3472,8 +3472,8 @@ export class CollectionQueryBuilder<TItem = any> {
    * Now delegates to collection strategy pattern
    */
   buildCTE(context: QueryContext, client?: DatabaseClient, parentIds?: any[]): { sql: string; params: any[] } {
-    // Determine strategy type - default to 'jsonb' if not specified
-    const strategyType: CollectionStrategyType = context.collectionStrategy || 'jsonb';
+    // Determine strategy type - default to 'cte' if not specified
+    const strategyType: CollectionStrategyType = context.collectionStrategy || 'cte';
     const strategy = CollectionStrategyFactory.getStrategy(strategyType);
 
     // Build selected fields configuration (supports nested objects)

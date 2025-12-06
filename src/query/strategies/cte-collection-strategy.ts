@@ -9,7 +9,7 @@ import {
 import { QueryContext } from '../query-builder';
 
 /**
- * JSONB-based collection strategy using CTEs
+ * CTE-based collection strategy
  *
  * This is the current/default strategy that uses PostgreSQL CTEs with jsonb_agg
  * to aggregate related records into JSONB arrays.
@@ -39,9 +39,9 @@ import { QueryContext } from '../query-builder';
  * SELECT ... COALESCE("cte_0".data, '[]'::jsonb) as "posts" ...
  * ```
  */
-export class JsonbCollectionStrategy implements ICollectionStrategy {
+export class CteCollectionStrategy implements ICollectionStrategy {
   getType(): CollectionStrategyType {
-    return 'jsonb';
+    return 'cte';
   }
 
   requiresParentIds(): boolean {

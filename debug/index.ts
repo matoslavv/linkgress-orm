@@ -45,7 +45,7 @@ async function main() {
       logQueries: true,
       logExecutionTime: true,
       logParameters: true,
-      collectionStrategy: 'jsonb'
+      collectionStrategy: 'cte'
     }
   );
 
