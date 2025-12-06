@@ -2055,6 +2055,257 @@ export class DbEntityTable<TEntity extends DbEntity> {
   }
 
   /**
+   * Bulk update multiple records efficiently using PostgreSQL VALUES clause
+   * Updates records matching primary key(s) with provided data
+   *
+   * @param data Array of objects with primary key(s) and columns to update
+   * @param config Optional configuration for the bulk update
+   * @returns Array of updated records
+   *
+   * @example
+   * ```typescript
+   * // Update multiple users at once
+   * await db.users.bulkUpdate([
+   *   { id: 1, age: 30 },
+   *   { id: 2, age: 25 },
+   *   { id: 3, isActive: false },
+   * ]);
+   *
+   * // With custom primary key
+   * await db.users.bulkUpdate(
+   *   [{ username: 'alice', age: 31 }],
+   *   { primaryKey: 'username' }
+   * );
+   * ```
+   */
+  async bulkUpdate(
+    data: Array<Partial<InsertData<TEntity>> & Record<string, any>>,
+    config?: {
+      /** Primary key column(s) to match records. Auto-detected if not specified */
+      primaryKey?: string | string[];
+      /** Chunk size for large batches. Auto-calculated if not specified */
+      chunkSize?: number;
+    }
+  ): Promise<UnwrapDbColumns<TEntity>[]> {
+    if (data.length === 0) {
+      return [];
+    }
+
+    const schema = this._getSchema();
+
+    // Determine primary keys
+    let primaryKeys: string[] = [];
+    if (config?.primaryKey) {
+      primaryKeys = Array.isArray(config.primaryKey) ? config.primaryKey : [config.primaryKey];
+    } else {
+      // Auto-detect from schema
+      for (const [key, colBuilder] of Object.entries(schema.columns)) {
+        const colConfig = (colBuilder as any).build();
+        if (colConfig.primaryKey) {
+          primaryKeys.push(key);
+        }
+      }
+    }
+
+    if (primaryKeys.length === 0) {
+      throw new Error('bulkUpdate requires at least one primary key column');
+    }
+
+    // Validate all records have primary keys
+    for (let i = 0; i < data.length; i++) {
+      for (const pk of primaryKeys) {
+        if (data[i][pk] === undefined) {
+          throw new Error(`Record at index ${i} is missing primary key "${pk}"`);
+        }
+      }
+    }
+
+    // Calculate chunk size
+    let chunkSize = config?.chunkSize;
+    if (chunkSize == null) {
+      const POSTGRES_MAX_PARAMS = 65535;
+      const referenceItem = data[0];
+      const columnCount = Object.keys(referenceItem).length;
+      const maxRowsPerBatch = Math.floor(POSTGRES_MAX_PARAMS / columnCount);
+      chunkSize = Math.floor(maxRowsPerBatch * 0.6);
+    }
+
+    // Process in chunks if needed
+    if (data.length > chunkSize) {
+      const results: UnwrapDbColumns<TEntity>[] = [];
+      for (let i = 0; i < data.length; i += chunkSize) {
+        const chunk = data.slice(i, i + chunkSize);
+        const chunkResults = await this.bulkUpdateSingle(chunk, primaryKeys);
+        results.push(...chunkResults);
+      }
+      return results;
+    }
+
+    return this.bulkUpdateSingle(data, primaryKeys);
+  }
+
+  /**
+   * Execute a single bulk update batch
+   * @internal
+   */
+  private async bulkUpdateSingle(
+    data: Array<Partial<InsertData<TEntity>> & Record<string, any>>,
+    primaryKeys: string[]
+  ): Promise<UnwrapDbColumns<TEntity>[]> {
+    const schema = this._getSchema();
+    const executor = this._getExecutor();
+    const client = this._getClient();
+    const qualifiedTableName = this._getQualifiedTableName();
+
+    // Collect all unique columns from all records (excluding PKs for SET clause)
+    const updateColumnsSet = new Set<string>();
+    const allColumnsSet = new Set<string>(primaryKeys);
+
+    for (const record of data) {
+      for (const key of Object.keys(record)) {
+        if (schema.columns[key]) {
+          allColumnsSet.add(key);
+          if (!primaryKeys.includes(key)) {
+            updateColumnsSet.add(key);
+          }
+        }
+      }
+    }
+
+    const updateColumns = Array.from(updateColumnsSet);
+    const allColumns = Array.from(allColumnsSet);
+
+    if (updateColumns.length === 0) {
+      throw new Error('No columns to update (only primary keys provided)');
+    }
+
+    // Build column info for SQL generation
+    const columnInfo: Array<{ propName: string; dbName: string; pgType: string }> = [];
+    for (const propName of allColumns) {
+      const colBuilder = schema.columns[propName];
+      if (colBuilder) {
+        const colConfig = (colBuilder as any).build();
+        columnInfo.push({
+          propName,
+          dbName: colConfig.name,
+          pgType: this.getPgTypeForCast(colConfig.type),
+        });
+      }
+    }
+
+    // Build VALUES clause with parameters
+    // For each value column, we also add a boolean flag indicating if it was explicitly provided
+    // This allows us to distinguish between undefined (not provided) and null (explicit null)
+    const valuesClauses: string[] = [];
+    const params: any[] = [];
+    let paramIndex = 1;
+
+    for (const record of data) {
+      const rowValues: string[] = [];
+      for (const col of columnInfo) {
+        const hasKey = col.propName in record;
+        const value = record[col.propName];
+
+        // Add the value (always cast to correct type for NULL to work in CASE expressions)
+        if (value === undefined || value === null) {
+          rowValues.push(`NULL::${col.pgType}`);
+        } else {
+          rowValues.push(`$${paramIndex++}::${col.pgType}`);
+          params.push(value);
+        }
+
+        // Add the "was provided" flag for non-PK columns
+        if (!primaryKeys.includes(col.propName)) {
+          rowValues.push(hasKey ? 'true' : 'false');
+        }
+      }
+      valuesClauses.push(`(${rowValues.join(', ')})`);
+    }
+
+    // Build column list for VALUES alias (includes flags for non-PK columns)
+    const valueColumnParts: string[] = [];
+    for (const col of columnInfo) {
+      valueColumnParts.push(`"${col.dbName}"`);
+      if (!primaryKeys.includes(col.propName)) {
+        valueColumnParts.push(`"${col.dbName}__provided"`);
+      }
+    }
+    const valueColumnList = valueColumnParts.join(', ');
+
+    // Build SET clause using CASE to handle provided vs not provided
+    // If the flag is true, use the new value (even if null); otherwise keep existing
+    const setClauses = updateColumns.map(propName => {
+      const col = columnInfo.find(c => c.propName === propName)!;
+      return `"${col.dbName}" = CASE WHEN v."${col.dbName}__provided" THEN v."${col.dbName}" ELSE t."${col.dbName}" END`;
+    });
+
+    // Build WHERE clause for PK matching
+    const whereClause = primaryKeys.map(pk => {
+      const col = columnInfo.find(c => c.propName === pk)!;
+      return `t."${col.dbName}" = v."${col.dbName}"`;
+    }).join(' AND ');
+
+    // Build RETURNING clause (qualified with table alias to avoid ambiguity with VALUES columns)
+    const returningColumns = Object.entries(schema.columns)
+      .map(([_, col]) => `t."${(col as any).build().name}"`)
+      .join(', ');
+
+    const sql = `
+UPDATE ${qualifiedTableName} AS t
+SET ${setClauses.join(', ')}
+FROM (VALUES ${valuesClauses.join(', ')}) AS v(${valueColumnList})
+WHERE ${whereClause}
+RETURNING ${returningColumns}
+    `.trim();
+
+    const result = executor
+      ? await executor.query(sql, params)
+      : await client.query(sql, params);
+
+    return this.mapResultsToEntities(result.rows);
+  }
+
+  /**
+   * Get PostgreSQL type string for casting in VALUES clause
+   * @internal
+   */
+  private getPgTypeForCast(columnType: string): string {
+    const typeMap: Record<string, string> = {
+      'smallint': 'smallint',
+      'integer': 'integer',
+      'bigint': 'bigint',
+      'serial': 'integer',
+      'smallserial': 'smallint',
+      'bigserial': 'bigint',
+      'decimal': 'decimal',
+      'numeric': 'numeric',
+      'real': 'real',
+      'double precision': 'double precision',
+      'money': 'money',
+      'varchar': 'varchar',
+      'char': 'char',
+      'text': 'text',
+      'bytea': 'bytea',
+      'timestamp': 'timestamp',
+      'timestamptz': 'timestamptz',
+      'date': 'date',
+      'time': 'time',
+      'timetz': 'timetz',
+      'interval': 'interval',
+      'boolean': 'boolean',
+      'uuid': 'uuid',
+      'json': 'json',
+      'jsonb': 'jsonb',
+      'inet': 'inet',
+      'cidr': 'cidr',
+      'macaddr': 'macaddr',
+      'macaddr8': 'macaddr8',
+    };
+
+    return typeMap[columnType] || columnType;
+  }
+
+  /**
    * Delete records matching condition
    * Usage: db.users.delete(u => eq(u.id, 1))
    */
