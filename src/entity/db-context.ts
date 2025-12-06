@@ -18,6 +18,28 @@ import type { Subquery } from '../query/subquery';
 export type CollectionStrategyType = 'jsonb' | 'temptable';
 
 /**
+ * Order direction for orderBy clauses
+ */
+export type OrderDirection = 'ASC' | 'DESC';
+
+/**
+ * A single field that can be used in orderBy.
+ * At runtime, this is analyzed to extract the column reference.
+ * The type is intentionally broad to support various usage patterns.
+ */
+export type OrderableField<T = unknown> = T;
+
+/**
+ * Order by specification with direction - a tuple of [field, direction]
+ */
+export type OrderByTuple<T = unknown> = [T, OrderDirection];
+
+/**
+ * Order by selector result - can be a single field, array of fields, or array of [field, direction] tuples
+ */
+export type OrderByResult<T = unknown> = T | T[] | Array<OrderByTuple<T>>;
+
+/**
  * Query execution options
  */
 export interface QueryOptions {
@@ -1379,12 +1401,12 @@ export interface EntityCollectionQuery<TEntity extends DbEntity> {
   ): EntityCollectionQueryWithSelect<TEntity, TSelection>;
 
   // Filtering
-  where(condition: (item: EntityQuery<TEntity>) => any): this;
+  where(condition: (item: EntityQuery<TEntity>) => Condition): this;
 
   // Ordering and pagination
-  orderBy(selector: (item: EntityQuery<TEntity>) => any): this;
-  orderBy(selector: (item: EntityQuery<TEntity>) => any[]): this;
-  orderBy(selector: (item: EntityQuery<TEntity>) => Array<[any, 'ASC' | 'DESC']>): this;
+  orderBy<T>(selector: (item: EntityQuery<TEntity>) => T): this;
+  orderBy<T>(selector: (item: EntityQuery<TEntity>) => T[]): this;
+  orderBy<T>(selector: (item: EntityQuery<TEntity>) => Array<[T, OrderDirection]>): this;
   limit(count: number): this;
   offset(count: number): this;
 
@@ -1404,12 +1426,12 @@ export interface EntityCollectionQuery<TEntity extends DbEntity> {
 
 export interface EntityCollectionQueryWithSelect<TEntity extends DbEntity, TSelection> {
   // Filtering
-  where(condition: (item: EntityQuery<TEntity>) => any): this;
+  where(condition: (item: EntityQuery<TEntity>) => Condition): this;
 
   // Ordering and pagination
-  orderBy(selector: (item: TSelection) => any): this;
-  orderBy(selector: (item: TSelection) => any[]): this;
-  orderBy(selector: (item: TSelection) => Array<[any, 'ASC' | 'DESC']>): this;
+  orderBy<T>(selector: (item: TSelection) => T): this;
+  orderBy<T>(selector: (item: TSelection) => T[]): this;
+  orderBy<T>(selector: (item: TSelection) => Array<[T, OrderDirection]>): this;
   limit(count: number): this;
   offset(count: number): this;
 
@@ -1447,7 +1469,7 @@ export interface IEntityQueryable<TEntity extends DbEntity> {
   /**
    * Add a WHERE condition. Multiple where() calls are chained with AND logic.
    */
-  where(condition: (entity: EntityQuery<TEntity>) => any): IEntityQueryable<TEntity>;
+  where(condition: (entity: EntityQuery<TEntity>) => Condition): IEntityQueryable<TEntity>;
 
   /**
    * Select specific fields from the entity
@@ -1459,9 +1481,9 @@ export interface IEntityQueryable<TEntity extends DbEntity> {
   /**
    * Order by field(s)
    */
-  orderBy(selector: (row: TEntity) => any): IEntityQueryable<TEntity>;
-  orderBy(selector: (row: TEntity) => any[]): IEntityQueryable<TEntity>;
-  orderBy(selector: (row: TEntity) => Array<[any, 'ASC' | 'DESC']>): IEntityQueryable<TEntity>;
+  orderBy<T>(selector: (row: EntityQuery<TEntity>) => T): IEntityQueryable<TEntity>;
+  orderBy<T>(selector: (row: EntityQuery<TEntity>) => T[]): IEntityQueryable<TEntity>;
+  orderBy<T>(selector: (row: EntityQuery<TEntity>) => Array<[T, OrderDirection]>): IEntityQueryable<TEntity>;
 
   /**
    * Limit results
@@ -1555,12 +1577,12 @@ export interface EntitySelectQueryBuilder<TEntity extends DbEntity, TSelection> 
   ): EntitySelectQueryBuilder<TEntity, UnwrapSelection<TNewSelection>>;
 
   where(
-    condition: (entity: TSelection extends DbEntity ? EntityQuery<TSelection> : ToFieldRefs<TSelection>) => any
+    condition: (entity: TSelection extends DbEntity ? EntityQuery<TSelection> : ToFieldRefs<TSelection>) => Condition
   ): EntitySelectQueryBuilder<TEntity, TSelection>;
 
-  orderBy(selector: (row: TSelection) => any): EntitySelectQueryBuilder<TEntity, TSelection>;
-  orderBy(selector: (row: TSelection) => any[]): EntitySelectQueryBuilder<TEntity, TSelection>;
-  orderBy(selector: (row: TSelection) => Array<[any, 'ASC' | 'DESC']>): EntitySelectQueryBuilder<TEntity, TSelection>;
+  orderBy<T>(selector: (row: TSelection extends DbEntity ? EntityQuery<TSelection> : TSelection) => T): EntitySelectQueryBuilder<TEntity, TSelection>;
+  orderBy<T>(selector: (row: TSelection extends DbEntity ? EntityQuery<TSelection> : TSelection) => T[]): EntitySelectQueryBuilder<TEntity, TSelection>;
+  orderBy<T>(selector: (row: TSelection extends DbEntity ? EntityQuery<TSelection> : TSelection) => Array<[T, OrderDirection]>): EntitySelectQueryBuilder<TEntity, TSelection>;
 
   limit(count: number): EntitySelectQueryBuilder<TEntity, TSelection>;
 
@@ -1923,10 +1945,10 @@ export class DbEntityTable<TEntity extends DbEntity> {
   /**
    * Order by field(s)
    */
-  orderBy(selector: (row: TEntity) => any): IEntityQueryable<TEntity>;
-  orderBy(selector: (row: TEntity) => any[]): IEntityQueryable<TEntity>;
-  orderBy(selector: (row: TEntity) => Array<[any, 'ASC' | 'DESC']>): IEntityQueryable<TEntity>;
-  orderBy(selector: (row: TEntity) => any | any[] | Array<[any, 'ASC' | 'DESC']>): IEntityQueryable<TEntity> {
+  orderBy<T>(selector: (row: EntityQuery<TEntity>) => T): IEntityQueryable<TEntity>;
+  orderBy<T>(selector: (row: EntityQuery<TEntity>) => T[]): IEntityQueryable<TEntity>;
+  orderBy<T>(selector: (row: EntityQuery<TEntity>) => Array<[T, OrderDirection]>): IEntityQueryable<TEntity>;
+  orderBy<T>(selector: (row: EntityQuery<TEntity>) => OrderByResult<T>): IEntityQueryable<TEntity> {
     const schema = this._getSchema();
     const allColumnsSelector = (e: any) => {
       const result: any = {};
@@ -2002,7 +2024,7 @@ export class DbEntityTable<TEntity extends DbEntity> {
    * Where query - returns all columns by default
    */
   where(
-    condition: (entity: EntityQuery<TEntity>) => any
+    condition: (entity: EntityQuery<TEntity>) => Condition
   ): IEntityQueryable<TEntity> {
     const schema = this._getSchema();
 

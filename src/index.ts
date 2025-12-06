@@ -168,6 +168,9 @@ export {
   EntityCollectionQuery,
   IEntityQueryable,
   EntitySelectQueryBuilder,
+  OrderDirection,
+  OrderByTuple,
+  OrderByResult,
 } from './entity/db-context';
 
 // Types
