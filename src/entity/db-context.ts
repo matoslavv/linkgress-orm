@@ -251,6 +251,33 @@ export interface UpsertConfig {
 }
 
 /**
+ * Returning clause configuration
+ * - undefined: no RETURNING clause (returns void)
+ * - true: return all columns
+ * - selector function: return selected columns
+ */
+export type ReturningConfig<TEntity, TResult = unknown> =
+  | undefined
+  | true
+  | ((entity: TEntity) => TResult);
+
+/**
+ * Helper type to infer the result type based on ReturningConfig
+ * Note: Uses conditional types to properly infer return types
+ */
+export type ReturningResult<TEntity, TReturning> =
+  TReturning extends undefined ? void :
+  TReturning extends true ? TEntity :
+  TReturning extends (entity: TEntity) => infer R ? R :
+  TReturning extends (...args: any[]) => infer R ? R :
+  never;
+
+/**
+ * Base type for returning option - used in method signatures
+ */
+export type ReturningOption<TEntity> = undefined | true | ((entity: TEntity) => any);
+
+/**
  * Insert builder for upsert operations
  */
 export class InsertBuilder<TSchema extends TableSchema> {
@@ -1860,84 +1887,542 @@ export class DbEntityTable<TEntity extends DbEntity> {
 
   /**
    * Insert - accepts only DbColumn properties (excludes navigation properties)
+   *
+   * @example
+   * ```typescript
+   * // Returns full entity (default - backward compatible)
+   * const user = await db.users.insert({ username: 'alice', email: 'alice@test.com' });
+   *
+   * // Returns void (no RETURNING clause)
+   * await db.users.insert({ username: 'alice', email: 'alice@test.com' }, { returning: undefined });
+   *
+   * // Returns all columns explicitly
+   * const user = await db.users.insert({ username: 'alice' }, { returning: true });
+   *
+   * // Returns selected columns only
+   * const result = await db.users.insert({ username: 'alice' }, {
+   *   returning: u => ({ id: u.id, username: u.username })
+   * });
+   * ```
    */
-  async insert(data: InsertData<TEntity>): Promise<UnwrapDbColumns<TEntity>> {
-    const result = await this.context.getTable(this.tableName).insert(data as any);
-    return this.mapResultToEntity(result);
+  // Overload: no options or returning: true -> returns full entity
+  async insert(
+    data: InsertData<TEntity>,
+    options?: { returning?: true }
+  ): Promise<UnwrapDbColumns<TEntity>>;
+  // Overload: returning: undefined -> returns void
+  async insert(
+    data: InsertData<TEntity>,
+    options: { returning: undefined }
+  ): Promise<void>;
+  // Overload: returning: selector function -> returns selected columns (unwrapped)
+  async insert<TResult>(
+    data: InsertData<TEntity>,
+    options: { returning: (entity: EntityQuery<TEntity>) => TResult }
+  ): Promise<UnwrapDbColumns<TResult>>;
+  // Implementation
+  async insert<TResult>(
+    data: InsertData<TEntity>,
+    options?: { returning?: undefined | true | ((entity: EntityQuery<TEntity>) => TResult) }
+  ): Promise<UnwrapDbColumns<TResult> | UnwrapDbColumns<TEntity> | void> {
+    // Use 'in' operator to check if returning was explicitly passed (even as undefined)
+    const returning = options && 'returning' in options ? options.returning : true;
+    const schema = this._getSchema();
+    const executor = this._getExecutor();
+    const client = this._getClient();
+
+    // Build INSERT columns and values
+    const columns: string[] = [];
+    const values: any[] = [];
+    const placeholders: string[] = [];
+    let paramIndex = 1;
+
+    for (const [key, value] of Object.entries(data)) {
+      const column = schema.columns[key];
+      if (column) {
+        const config = (column as any).build();
+        if (!config.autoIncrement) {
+          columns.push(`"${config.name}"`);
+          const mappedValue = config.mapper ? config.mapper.toDriver(value) : value;
+          values.push(mappedValue);
+          placeholders.push(`$${paramIndex++}`);
+        }
+      }
+    }
+
+    // Build RETURNING clause
+    const returningClause = this.buildReturningClause(returning);
+    const qualifiedTableName = this._getQualifiedTableName();
+
+    let sql = `INSERT INTO ${qualifiedTableName} (${columns.join(', ')}) VALUES (${placeholders.join(', ')})`;
+    if (returningClause) {
+      sql += ` RETURNING ${returningClause.sql}`;
+    }
+
+    const result = executor
+      ? await executor.query(sql, values)
+      : await client.query(sql, values);
+
+    if (!returningClause) {
+      return undefined as any;
+    }
+
+    const mappedResults = this.mapReturningResults(result.rows, returning);
+    return mappedResults[0] as any;
   }
 
   /**
    * Insert multiple records
+   *
+   * @example
+   * ```typescript
+   * // Returns full entities (default)
+   * const users = await db.users.insertMany([{ username: 'alice' }, { username: 'bob' }]);
+   *
+   * // Returns void (no RETURNING)
+   * await db.users.insertMany([{ username: 'alice' }], { returning: undefined });
+   *
+   * // Returns selected columns
+   * const results = await db.users.insertMany([{ username: 'alice' }], {
+   *   returning: u => ({ id: u.id })
+   * });
+   * ```
    */
-  async insertMany(data: InsertData<TEntity>[]): Promise<UnwrapDbColumns<TEntity>[]> {
-    return this.insertBulk(data);
+  // Overload: no options or returning: true -> returns full entities
+  async insertMany(
+    data: InsertData<TEntity>[],
+    options?: { returning?: true }
+  ): Promise<UnwrapDbColumns<TEntity>[]>;
+  // Overload: returning: undefined -> returns void
+  async insertMany(
+    data: InsertData<TEntity>[],
+    options: { returning: undefined }
+  ): Promise<void>;
+  // Overload: returning: selector function -> returns selected columns (unwrapped)
+  async insertMany<TResult>(
+    data: InsertData<TEntity>[],
+    options: { returning: (entity: EntityQuery<TEntity>) => TResult }
+  ): Promise<UnwrapDbColumns<TResult>[]>;
+  // Implementation
+  async insertMany<TResult>(
+    data: InsertData<TEntity>[],
+    options?: { returning?: undefined | true | ((entity: EntityQuery<TEntity>) => TResult) }
+  ): Promise<UnwrapDbColumns<TResult>[] | UnwrapDbColumns<TEntity>[] | void> {
+    return this.insertBulk(data, options as any) as any;
   }
 
   /**
    * Upsert (insert or update on conflict)
    */
+  // Overload: no config or returning: true -> returns full entities
   async upsert(
     data: InsertData<TEntity>[],
-    config?: EntityUpsertConfig<TEntity>
-  ): Promise<UnwrapDbColumns<TEntity>[]> {
-    return this.upsertBulk(data, config);
+    config?: EntityUpsertConfig<TEntity> & { returning?: true }
+  ): Promise<UnwrapDbColumns<TEntity>[]>;
+  // Overload: returning: undefined -> returns void
+  async upsert(
+    data: InsertData<TEntity>[],
+    config: EntityUpsertConfig<TEntity> & { returning: undefined }
+  ): Promise<void>;
+  // Overload: returning: selector function -> returns selected columns (unwrapped)
+  async upsert<TResult>(
+    data: InsertData<TEntity>[],
+    config: EntityUpsertConfig<TEntity> & { returning: (entity: EntityQuery<TEntity>) => TResult }
+  ): Promise<UnwrapDbColumns<TResult>[]>;
+  // Implementation
+  async upsert<TResult>(
+    data: InsertData<TEntity>[],
+    config?: EntityUpsertConfig<TEntity> & { returning?: undefined | true | ((entity: EntityQuery<TEntity>) => TResult) }
+  ): Promise<UnwrapDbColumns<TResult>[] | UnwrapDbColumns<TEntity>[] | void> {
+    return this.upsertBulk(data, config as any) as any;
   }
 
   /**
    * Bulk insert with advanced configuration
    * Supports automatic chunking for large datasets
+   *
+   * @example
+   * ```typescript
+   * // Returns full entities (default)
+   * const users = await db.users.insertBulk([{ username: 'alice' }]);
+   *
+   * // Returns void (no RETURNING)
+   * await db.users.insertBulk([{ username: 'alice' }], { returning: undefined });
+   *
+   * // Returns selected columns
+   * const results = await db.users.insertBulk([{ username: 'alice' }], {
+   *   returning: u => ({ id: u.id, username: u.username })
+   * });
+   * ```
    */
+  // Overload: no options or returning: true -> returns full entities
   async insertBulk(
     value: InsertData<TEntity> | InsertData<TEntity>[],
-    insertConfig?: InsertConfig
-  ): Promise<UnwrapDbColumns<TEntity>[]> {
-    const results = await this.context.getTable(this.tableName).insertBulk(value as any, insertConfig);
-    return this.mapResultsToEntities(results);
+    options?: InsertConfig & { returning?: true }
+  ): Promise<UnwrapDbColumns<TEntity>[]>;
+  // Overload: returning: undefined -> returns void
+  async insertBulk(
+    value: InsertData<TEntity> | InsertData<TEntity>[],
+    options: InsertConfig & { returning: undefined }
+  ): Promise<void>;
+  // Overload: returning: selector function -> returns selected columns (unwrapped)
+  async insertBulk<TResult>(
+    value: InsertData<TEntity> | InsertData<TEntity>[],
+    options: InsertConfig & { returning: (entity: EntityQuery<TEntity>) => TResult }
+  ): Promise<UnwrapDbColumns<TResult>[]>;
+  // Implementation
+  async insertBulk<TResult>(
+    value: InsertData<TEntity> | InsertData<TEntity>[],
+    options?: InsertConfig & { returning?: undefined | true | ((entity: EntityQuery<TEntity>) => TResult) }
+  ): Promise<UnwrapDbColumns<TResult>[] | UnwrapDbColumns<TEntity>[] | void> {
+    // Use 'in' operator to check if returning was explicitly passed (even as undefined)
+    const returning = options && 'returning' in options ? options.returning : true;
+
+    const dataArray = Array.isArray(value) ? value : [value];
+    if (dataArray.length === 0) {
+      return (returning === undefined ? undefined : []) as any;
+    }
+
+    // Calculate chunk size
+    let chunkSize = options?.chunkSize;
+    if (chunkSize == null) {
+      const POSTGRES_MAX_PARAMS = 65535;
+      const columnCount = Object.keys(dataArray[0]).length;
+      const maxRowsPerBatch = Math.floor(POSTGRES_MAX_PARAMS / columnCount);
+      chunkSize = Math.floor(maxRowsPerBatch * 0.6);
+    }
+
+    // Process in chunks if needed
+    if (dataArray.length > chunkSize) {
+      const allResults: any[] = [];
+      for (let i = 0; i < dataArray.length; i += chunkSize) {
+        const chunk = dataArray.slice(i, i + chunkSize);
+        const chunkResults = await this.insertBulkSingle(chunk, returning, options?.overridingSystemValue);
+        if (chunkResults) allResults.push(...chunkResults);
+      }
+      return (returning === undefined ? undefined : allResults) as any;
+    }
+
+    return this.insertBulkSingle(dataArray, returning, options?.overridingSystemValue) as any;
+  }
+
+  /**
+   * Execute a single bulk insert batch
+   * @internal
+   */
+  private async insertBulkSingle<TReturning>(
+    data: InsertData<TEntity>[],
+    returning: TReturning,
+    overridingSystemValue?: boolean
+  ): Promise<any[] | void> {
+    const schema = this._getSchema();
+    const executor = this._getExecutor();
+    const client = this._getClient();
+    const qualifiedTableName = this._getQualifiedTableName();
+
+    // Get columns from first row
+    const referenceItem = data[0];
+    const columnConfigs: Array<{ propName: string; dbName: string; mapper?: any }> = [];
+
+    for (const [propName, colBuilder] of Object.entries(schema.columns)) {
+      if (propName in referenceItem) {
+        const config = (colBuilder as any).build();
+        if (!config.autoIncrement || overridingSystemValue) {
+          columnConfigs.push({
+            propName,
+            dbName: config.name,
+            mapper: config.mapper,
+          });
+        }
+      }
+    }
+
+    // Build VALUES clauses
+    const valuesClauses: string[] = [];
+    const params: any[] = [];
+    let paramIndex = 1;
+
+    for (const record of data) {
+      const rowValues: string[] = [];
+      for (const col of columnConfigs) {
+        const value = (record as any)[col.propName];
+        const mappedValue = col.mapper ? col.mapper.toDriver(value) : value;
+        rowValues.push(`$${paramIndex++}`);
+        params.push(mappedValue);
+      }
+      valuesClauses.push(`(${rowValues.join(', ')})`);
+    }
+
+    const columnList = columnConfigs.map(c => `"${c.dbName}"`).join(', ');
+    const returningClause = this.buildReturningClause(returning as any);
+
+    let sql = `INSERT INTO ${qualifiedTableName} (${columnList})`;
+    if (overridingSystemValue) {
+      sql += ' OVERRIDING SYSTEM VALUE';
+    }
+    sql += ` VALUES ${valuesClauses.join(', ')}`;
+    if (returningClause) {
+      sql += ` RETURNING ${returningClause.sql}`;
+    }
+
+    const result = executor
+      ? await executor.query(sql, params)
+      : await client.query(sql, params);
+
+    if (!returningClause) {
+      return undefined;
+    }
+
+    return this.mapReturningResults(result.rows, returning as any);
   }
 
   /**
    * Upsert with advanced configuration
    * Auto-detects primary keys and supports chunking
+   *
+   * @example
+   * ```typescript
+   * // Returns full entities (default)
+   * const users = await db.users.upsertBulk([{ id: 1, username: 'alice' }]);
+   *
+   * // Returns void (no RETURNING)
+   * await db.users.upsertBulk([{ id: 1, username: 'alice' }], { returning: undefined });
+   *
+   * // Returns selected columns
+   * const results = await db.users.upsertBulk([{ id: 1, username: 'alice' }], {
+   *   returning: u => ({ id: u.id, username: u.username })
+   * });
+   * ```
    */
+  // Overload: no config or returning: true -> returns full entities
   async upsertBulk(
     values: InsertData<TEntity>[],
-    config?: EntityUpsertConfig<TEntity>
-  ): Promise<UnwrapDbColumns<TEntity>[]> {
-    // Convert typed config to base config
-    const baseConfig: UpsertConfig = {
-      chunkSize: config?.chunkSize,
-      overridingSystemValue: config?.overridingSystemValue,
-      targetWhere: config?.targetWhere,
-      setWhere: config?.setWhere,
-      referenceItem: config?.referenceItem,
-      updateColumnFilter: config?.updateColumnFilter,
-    };
+    config?: EntityUpsertConfig<TEntity> & { returning?: true }
+  ): Promise<UnwrapDbColumns<TEntity>[]>;
+  // Overload: returning: undefined -> returns void
+  async upsertBulk(
+    values: InsertData<TEntity>[],
+    config: EntityUpsertConfig<TEntity> & { returning: undefined }
+  ): Promise<void>;
+  // Overload: returning: selector function -> returns selected columns (unwrapped)
+  async upsertBulk<TResult>(
+    values: InsertData<TEntity>[],
+    config: EntityUpsertConfig<TEntity> & { returning: (entity: EntityQuery<TEntity>) => TResult }
+  ): Promise<UnwrapDbColumns<TResult>[]>;
+  // Implementation
+  async upsertBulk<TResult>(
+    values: InsertData<TEntity>[],
+    config?: EntityUpsertConfig<TEntity> & { returning?: undefined | true | ((entity: EntityQuery<TEntity>) => TResult) }
+  ): Promise<UnwrapDbColumns<TResult>[] | UnwrapDbColumns<TEntity>[] | void> {
+    // Use 'in' operator to check if returning was explicitly passed (even as undefined)
+    const returning = config && 'returning' in config ? config.returning : true;
+
+    if (values.length === 0) {
+      return (returning === undefined ? undefined : []) as any;
+    }
+
+    const schema = this._getSchema();
 
     // Handle primaryKey (can be lambda, string, or array)
+    let primaryKeys: string[] = [];
     if (config?.primaryKey) {
       if (typeof config.primaryKey === 'function') {
-        // Lambda selector - extract property names
         const pkProps = this.extractPropertyNames(config.primaryKey);
-        baseConfig.primaryKey = pkProps.length === 1 ? pkProps[0] : pkProps;
+        primaryKeys = pkProps;
+      } else if (Array.isArray(config.primaryKey)) {
+        primaryKeys = config.primaryKey as string[];
       } else {
-        // Direct string or array
-        baseConfig.primaryKey = config.primaryKey as string | string[];
+        primaryKeys = [config.primaryKey as string];
+      }
+    } else {
+      // Auto-detect from schema
+      for (const [key, colBuilder] of Object.entries(schema.columns)) {
+        const colConfig = (colBuilder as any).build();
+        if (colConfig.primaryKey) {
+          primaryKeys.push(key);
+        }
       }
     }
 
     // Handle updateColumns (can be lambda or array)
+    let updateColumns: string[] | undefined;
     if (config?.updateColumns) {
       if (typeof config.updateColumns === 'function') {
-        // Lambda selector - extract property names
-        baseConfig.updateColumns = this.extractPropertyNames(config.updateColumns);
+        updateColumns = this.extractPropertyNames(config.updateColumns);
       } else {
-        // Direct array
-        baseConfig.updateColumns = config.updateColumns as string[];
+        updateColumns = config.updateColumns as string[];
       }
     }
 
-    const results = await this.context.getTable(this.tableName).upsertBulk(values as any, baseConfig);
-    return this.mapResultsToEntities(results);
+    // Auto-detect overridingSystemValue
+    let overridingSystemValue = config?.overridingSystemValue;
+    if (overridingSystemValue == null) {
+      const referenceItem = config?.referenceItem || values[0];
+      for (const key of Object.keys(referenceItem as object)) {
+        const column = schema.columns[key];
+        if (column) {
+          const colConfig = (column as any).build();
+          if (colConfig.primaryKey && colConfig.autoIncrement) {
+            overridingSystemValue = true;
+            break;
+          }
+        }
+      }
+    }
+
+    // Calculate chunk size
+    let chunkSize = config?.chunkSize;
+    if (chunkSize == null) {
+      const POSTGRES_MAX_PARAMS = 65535;
+      const columnCount = Object.keys(values[0]).length;
+      const maxRowsPerBatch = Math.floor(POSTGRES_MAX_PARAMS / columnCount);
+      chunkSize = Math.floor(maxRowsPerBatch * 0.6);
+    }
+
+    // Process in chunks if needed
+    if (values.length > chunkSize) {
+      const allResults: any[] = [];
+      for (let i = 0; i < values.length; i += chunkSize) {
+        const chunk = values.slice(i, i + chunkSize);
+        const chunkResults = await this.upsertBulkSingle(
+          chunk, primaryKeys, updateColumns, config?.updateColumnFilter,
+          overridingSystemValue || false, config?.targetWhere, config?.setWhere, returning
+        );
+        if (chunkResults) allResults.push(...chunkResults);
+      }
+      return (returning === undefined ? undefined : allResults) as any;
+    }
+
+    return this.upsertBulkSingle(
+      values, primaryKeys, updateColumns, config?.updateColumnFilter,
+      overridingSystemValue || false, config?.targetWhere, config?.setWhere, returning
+    ) as any;
+  }
+
+  /**
+   * Execute a single upsert batch
+   * @internal
+   */
+  private async upsertBulkSingle<TReturning>(
+    values: InsertData<TEntity>[],
+    primaryKeys: string[],
+    updateColumns: string[] | undefined,
+    updateColumnFilter: ((colId: string) => boolean) | undefined,
+    overridingSystemValue: boolean,
+    targetWhere: string | undefined,
+    setWhere: string | undefined,
+    returning: TReturning
+  ): Promise<any[] | void> {
+    const schema = this._getSchema();
+    const executor = this._getExecutor();
+    const client = this._getClient();
+    const qualifiedTableName = this._getQualifiedTableName();
+
+    // Extract all unique column names from all data objects
+    const columnConfigs: Array<{ propName: string; dbName: string; mapper?: any }> = [];
+    const columnSet = new Set<string>();
+
+    for (const data of values) {
+      for (const key of Object.keys(data)) {
+        if (!columnSet.has(key)) {
+          const column = schema.columns[key];
+          if (column) {
+            const config = (column as any).build();
+            if (!config.autoIncrement || overridingSystemValue) {
+              columnSet.add(key);
+              columnConfigs.push({
+                propName: key,
+                dbName: config.name,
+                mapper: config.mapper,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Build VALUES clauses
+    const valuesClauses: string[] = [];
+    const params: any[] = [];
+    let paramIndex = 1;
+
+    for (const record of values) {
+      const rowValues: string[] = [];
+      for (const col of columnConfigs) {
+        const value = (record as any)[col.propName];
+        const mappedValue = col.mapper
+          ? col.mapper.toDriver(value !== undefined ? value : null)
+          : (value !== undefined ? value : null);
+        rowValues.push(`$${paramIndex++}`);
+        params.push(mappedValue);
+      }
+      valuesClauses.push(`(${rowValues.join(', ')})`);
+    }
+
+    const columnList = columnConfigs.map(c => `"${c.dbName}"`).join(', ');
+
+    // Build SQL
+    let sql = `INSERT INTO ${qualifiedTableName} (${columnList})`;
+
+    if (overridingSystemValue) {
+      sql += ' OVERRIDING SYSTEM VALUE';
+    }
+
+    sql += ` VALUES ${valuesClauses.join(', ')}`;
+
+    // Add ON CONFLICT clause
+    const conflictCols = primaryKeys.map(pk => {
+      const col = columnConfigs.find(c => c.propName === pk);
+      return col ? `"${col.dbName}"` : `"${pk}"`;
+    }).join(', ');
+
+    sql += ` ON CONFLICT (${conflictCols})`;
+
+    if (targetWhere) {
+      sql += ` WHERE ${targetWhere}`;
+    }
+
+    // Determine columns to update
+    let columnsToUpdate: string[];
+    if (updateColumns) {
+      columnsToUpdate = updateColumns;
+    } else if (updateColumnFilter) {
+      columnsToUpdate = Array.from(columnSet).filter(updateColumnFilter);
+    } else {
+      columnsToUpdate = Array.from(columnSet).filter(key => !primaryKeys.includes(key));
+    }
+
+    if (columnsToUpdate.length === 0) {
+      sql += ' DO NOTHING';
+    } else {
+      const updateSetClauses = columnsToUpdate.map(propName => {
+        const col = columnConfigs.find(c => c.propName === propName);
+        const dbName = col ? col.dbName : propName;
+        return `"${dbName}" = EXCLUDED."${dbName}"`;
+      });
+
+      sql += ` DO UPDATE SET ${updateSetClauses.join(', ')}`;
+
+      if (setWhere) {
+        sql += ` WHERE ${setWhere}`;
+      }
+    }
+
+    // Add RETURNING clause
+    const returningClause = this.buildReturningClause(returning as any);
+    if (returningClause) {
+      sql += ` RETURNING ${returningClause.sql}`;
+    }
+
+    const result = executor
+      ? await executor.query(sql, params)
+      : await client.query(sql, params);
+
+    if (!returningClause) {
+      return undefined;
+    }
+
+    return this.mapReturningResults(result.rows, returning as any);
   }
 
   /**
@@ -1997,12 +2482,47 @@ export class DbEntityTable<TEntity extends DbEntity> {
 
   /**
    * Update records matching condition
-   * Usage: db.users.update({ age: 30 }, u => eq(u.id, 1))
+   *
+   * @example
+   * ```typescript
+   * // Returns full entities (default)
+   * const users = await db.users.update({ age: 30 }, u => eq(u.id, 1));
+   *
+   * // Returns void (no RETURNING)
+   * await db.users.update({ age: 30 }, u => eq(u.id, 1), { returning: undefined });
+   *
+   * // Returns selected columns
+   * const results = await db.users.update({ age: 30 }, u => eq(u.id, 1), {
+   *   returning: u => ({ id: u.id, age: u.age })
+   * });
+   * ```
    */
+  // Overload: no options or returning: true -> returns full entities
   async update(
     data: Partial<InsertData<TEntity>>,
-    condition: (entity: EntityQuery<TEntity>) => Condition
-  ): Promise<UnwrapDbColumns<TEntity>[]> {
+    condition: (entity: EntityQuery<TEntity>) => Condition,
+    options?: { returning?: true }
+  ): Promise<UnwrapDbColumns<TEntity>[]>;
+  // Overload: returning: undefined -> returns void
+  async update(
+    data: Partial<InsertData<TEntity>>,
+    condition: (entity: EntityQuery<TEntity>) => Condition,
+    options: { returning: undefined }
+  ): Promise<void>;
+  // Overload: returning: selector function -> returns selected columns (unwrapped)
+  async update<TResult>(
+    data: Partial<InsertData<TEntity>>,
+    condition: (entity: EntityQuery<TEntity>) => Condition,
+    options: { returning: (entity: EntityQuery<TEntity>) => TResult }
+  ): Promise<UnwrapDbColumns<TResult>[]>;
+  // Implementation
+  async update<TResult>(
+    data: Partial<InsertData<TEntity>>,
+    condition: (entity: EntityQuery<TEntity>) => Condition,
+    options?: { returning?: undefined | true | ((entity: EntityQuery<TEntity>) => TResult) }
+  ): Promise<UnwrapDbColumns<TResult>[] | UnwrapDbColumns<TEntity>[] | void> {
+    // Use 'in' operator to check if returning was explicitly passed (even as undefined)
+    const returning = options && 'returning' in options ? options.returning : true;
     const schema = this._getSchema();
     const executor = this._getExecutor();
     const client = this._getClient();
@@ -2015,7 +2535,7 @@ export class DbEntityTable<TEntity extends DbEntity> {
     for (const [key, value] of Object.entries(data)) {
       const column = schema.columns[key];
       if (column) {
-        const config = column.build();
+        const config = (column as any).build();
         setClauses.push(`"${config.name}" = $${paramIndex++}`);
         values.push(value);
       }
@@ -2035,23 +2555,23 @@ export class DbEntityTable<TEntity extends DbEntity> {
     values.push(...whereParams);
 
     // Build RETURNING clause
-    const returningColumns = Object.entries(schema.columns)
-      .map(([_, col]) => `"${(col as any).build().name}"`)
-      .join(', ');
+    const returningClause = this.buildReturningClause(returning);
 
     const qualifiedTableName = this._getQualifiedTableName();
-    const sql = `
-      UPDATE ${qualifiedTableName}
-      SET ${setClauses.join(', ')}
-      WHERE ${whereSql}
-      RETURNING ${returningColumns}
-    `;
+    let sql = `UPDATE ${qualifiedTableName} SET ${setClauses.join(', ')} WHERE ${whereSql}`;
+    if (returningClause) {
+      sql += ` RETURNING ${returningClause.sql}`;
+    }
 
     const result = executor
       ? await executor.query(sql, values)
       : await client.query(sql, values);
 
-    return this.mapResultsToEntities(result.rows);
+    if (!returningClause) {
+      return undefined as any;
+    }
+
+    return this.mapReturningResults(result.rows, returning) as any;
   }
 
   /**
@@ -2064,12 +2584,20 @@ export class DbEntityTable<TEntity extends DbEntity> {
    *
    * @example
    * ```typescript
-   * // Update multiple users at once
-   * await db.users.bulkUpdate([
+   * // Update multiple users at once (returns full entities by default)
+   * const updated = await db.users.bulkUpdate([
    *   { id: 1, age: 30 },
    *   { id: 2, age: 25 },
    *   { id: 3, isActive: false },
    * ]);
+   *
+   * // Returns void (no RETURNING)
+   * await db.users.bulkUpdate([{ id: 1, age: 30 }], { returning: undefined });
+   *
+   * // Returns selected columns
+   * const results = await db.users.bulkUpdate([{ id: 1, age: 30 }], {
+   *   returning: u => ({ id: u.id, age: u.age })
+   * });
    *
    * // With custom primary key
    * await db.users.bulkUpdate(
@@ -2078,17 +2606,50 @@ export class DbEntityTable<TEntity extends DbEntity> {
    * );
    * ```
    */
+  // Overload: no config or returning: true -> returns full entities
   async bulkUpdate(
+    data: Array<Partial<InsertData<TEntity>> & Record<string, any>>,
+    config?: {
+      primaryKey?: string | string[];
+      chunkSize?: number;
+      returning?: true;
+    }
+  ): Promise<UnwrapDbColumns<TEntity>[]>;
+  // Overload: returning: undefined -> returns void
+  async bulkUpdate(
+    data: Array<Partial<InsertData<TEntity>> & Record<string, any>>,
+    config: {
+      primaryKey?: string | string[];
+      chunkSize?: number;
+      returning: undefined;
+    }
+  ): Promise<void>;
+  // Overload: returning: selector function -> returns selected columns (unwrapped)
+  async bulkUpdate<TResult>(
+    data: Array<Partial<InsertData<TEntity>> & Record<string, any>>,
+    config: {
+      primaryKey?: string | string[];
+      chunkSize?: number;
+      returning: (entity: EntityQuery<TEntity>) => TResult;
+    }
+  ): Promise<UnwrapDbColumns<TResult>[]>;
+  // Implementation
+  async bulkUpdate<TResult>(
     data: Array<Partial<InsertData<TEntity>> & Record<string, any>>,
     config?: {
       /** Primary key column(s) to match records. Auto-detected if not specified */
       primaryKey?: string | string[];
       /** Chunk size for large batches. Auto-calculated if not specified */
       chunkSize?: number;
+      /** Returning clause configuration */
+      returning?: undefined | true | ((entity: EntityQuery<TEntity>) => TResult);
     }
-  ): Promise<UnwrapDbColumns<TEntity>[]> {
+  ): Promise<UnwrapDbColumns<TResult>[] | UnwrapDbColumns<TEntity>[] | void> {
+    // Use 'in' operator to check if returning was explicitly passed (even as undefined)
+    const returning = config && 'returning' in config ? config.returning : true;
+
     if (data.length === 0) {
-      return [];
+      return (returning === undefined ? undefined : []) as any;
     }
 
     const schema = this._getSchema();
@@ -2132,16 +2693,16 @@ export class DbEntityTable<TEntity extends DbEntity> {
 
     // Process in chunks if needed
     if (data.length > chunkSize) {
-      const results: UnwrapDbColumns<TEntity>[] = [];
+      const allResults: any[] = [];
       for (let i = 0; i < data.length; i += chunkSize) {
         const chunk = data.slice(i, i + chunkSize);
-        const chunkResults = await this.bulkUpdateSingle(chunk, primaryKeys);
-        results.push(...chunkResults);
+        const chunkResults = await this.bulkUpdateSingle(chunk, primaryKeys, returning);
+        if (chunkResults) allResults.push(...chunkResults);
       }
-      return results;
+      return (returning === undefined ? undefined : allResults) as any;
     }
 
-    return this.bulkUpdateSingle(data, primaryKeys);
+    return this.bulkUpdateSingle(data, primaryKeys, returning) as any;
   }
 
   /** Static type map for PostgreSQL type casting - computed once */
@@ -2181,10 +2742,11 @@ export class DbEntityTable<TEntity extends DbEntity> {
    * Execute a single bulk update batch
    * @internal
    */
-  private async bulkUpdateSingle(
+  private async bulkUpdateSingle<TReturning>(
     data: Array<Partial<InsertData<TEntity>> & Record<string, any>>,
-    primaryKeys: string[]
-  ): Promise<UnwrapDbColumns<TEntity>[]> {
+    primaryKeys: string[],
+    returning: TReturning
+  ): Promise<any[] | void> {
     const schema = this._getSchema();
     const executor = this._getExecutor();
     const client = this._getClient();
@@ -2267,24 +2829,28 @@ export class DbEntityTable<TEntity extends DbEntity> {
       valuesClauses.push(`(${rowValues.join(', ')})`);
     }
 
-    // Build RETURNING clause - use cached column configs
-    const returningColumns = Object.values(schema.columns)
-      .map(col => `t."${(col as any).build().name}"`)
-      .join(', ');
+    // Build RETURNING clause
+    const returningClause = this.buildReturningClause(returning as any, 't');
 
-    const sql = `
+    let sql = `
 UPDATE ${qualifiedTableName} AS t
 SET ${setClauses.join(', ')}
 FROM (VALUES ${valuesClauses.join(', ')}) AS v(${valueColumnList})
-WHERE ${whereClause}
-RETURNING ${returningColumns}
-    `.trim();
+WHERE ${whereClause}`.trim();
+
+    if (returningClause) {
+      sql += ` RETURNING ${returningClause.sql}`;
+    }
 
     const result = executor
       ? await executor.query(sql, params)
       : await client.query(sql, params);
 
-    return this.mapResultsToEntities(result.rows);
+    if (!returningClause) {
+      return undefined;
+    }
+
+    return this.mapReturningResults(result.rows, returning as any);
   }
 
   /**
@@ -2368,6 +2934,94 @@ RETURNING ${returningColumns}
     }
 
     return mock;
+  }
+
+  /**
+   * Build RETURNING clause SQL based on config
+   * @internal
+   */
+  private buildReturningClause<TResult>(
+    returning: ReturningConfig<EntityQuery<TEntity>, TResult>,
+    tableAlias?: string
+  ): { sql: string; columns: string[] } | null {
+    if (returning === undefined) {
+      return null; // No RETURNING
+    }
+
+    const schema = this._getSchema();
+    const prefix = tableAlias ? `${tableAlias}.` : '';
+
+    if (returning === true) {
+      // Return all columns
+      const columns = Object.values(schema.columns).map(col => (col as any).build().name);
+      const sql = columns.map(name => `${prefix}"${name}"`).join(', ');
+      return { sql, columns };
+    }
+
+    // Selector function - extract selected columns
+    const mockEntity = this.createMockEntity();
+    const selection = returning(mockEntity as any);
+
+    if (typeof selection === 'object' && selection !== null) {
+      const columns: string[] = [];
+      const sqlParts: string[] = [];
+
+      for (const [alias, field] of Object.entries(selection)) {
+        if (field && typeof field === 'object' && '__dbColumnName' in field) {
+          const dbName = (field as any).__dbColumnName;
+          columns.push(alias);
+          sqlParts.push(`${prefix}"${dbName}" AS "${alias}"`);
+        }
+      }
+
+      return { sql: sqlParts.join(', '), columns };
+    }
+
+    // Single field selection
+    if (selection && typeof selection === 'object' && '__dbColumnName' in selection) {
+      const dbName = (selection as any).__dbColumnName;
+      return { sql: `${prefix}"${dbName}"`, columns: [dbName] };
+    }
+
+    return null;
+  }
+
+  /**
+   * Map row results based on returning config
+   * @internal
+   */
+  private mapReturningResults<TResult>(
+    rows: any[],
+    returning: ReturningConfig<EntityQuery<TEntity>, TResult>
+  ): any[] {
+    if (returning === true) {
+      // Full entity mapping
+      return this.mapResultsToEntities(rows);
+    }
+
+    // For selector functions, rows are already in the correct shape
+    // Just apply any type mappers needed
+    const schema = this._getSchema();
+    return rows.map(row => {
+      const mapped: any = {};
+      for (const [key, value] of Object.entries(row)) {
+        // Try to find column by alias or name
+        const colEntry = Object.entries(schema.columns).find(([propName, col]) => {
+          const config = (col as any).build();
+          return propName === key || config.name === key;
+        });
+
+        if (colEntry) {
+          const [propName, col] = colEntry;
+          const config = (col as any).build();
+          // Apply fromDriver mapper if present
+          mapped[key] = config.mapper ? config.mapper.fromDriver(value) : value;
+        } else {
+          mapped[key] = value;
+        }
+      }
+      return mapped;
+    });
   }
 
   // Note: findById not yet implemented on TableAccessor
