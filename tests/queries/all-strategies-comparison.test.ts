@@ -4,7 +4,7 @@ import { assertType } from '../utils/type-tester';
 
 /**
  * Comprehensive comparison tests for all three collection strategies:
- * - CTE (Common Table Expression with jsonb_agg)
+ * - CTE (Common Table Expression with json_agg)
  * - Temp Table (temporary table with separate queries)
  * - Lateral (LEFT JOIN LATERAL subqueries)
  *

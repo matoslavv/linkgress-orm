@@ -34,8 +34,8 @@ import { QueryContext } from '../query-builder';
  *
  * SELECT
  *   t.id as parent_id,
- *   jsonb_agg(
- *     jsonb_build_object('id', p.id, 'title', p.title)
+ *   json_agg(
+ *     json_build_object('id', p.id, 'title', p.title)
  *     ORDER BY p.views DESC
  *   ) as data
  * FROM tmp_parent_ids_0 t
@@ -132,7 +132,7 @@ DROP TABLE IF EXISTS ${tempTableName};
     const dataMap = new Map<number, any>();
 
     if (isClientSideGrouping) {
-      // Client-side grouping for JSONB/array - much faster than jsonb_agg!
+      // Client-side grouping for JSONB/array - much faster than json_agg!
       if (config.aggregationType === 'jsonb') {
         // Group rows by parent_id and build objects
         for (const row of result.rows) {
@@ -275,7 +275,7 @@ ${aggregationSQL}
    * Used for multi-statement queries with .simple() mode
    *
    * For JSONB/array aggregations, this returns a simple SELECT without aggregation
-   * so we can group in JavaScript (much faster than jsonb_agg)
+   * so we can group in JavaScript (much faster than json_agg)
    */
   private buildAggregationSQLWithInterpolatedParams(
     config: CollectionAggregationConfig,
@@ -297,7 +297,7 @@ ${aggregationSQL}
     }
 
     // For multi-statement optimization: use simple SELECT instead of aggregation
-    // This allows us to group in JavaScript which is much faster than jsonb_agg
+    // This allows us to group in JavaScript which is much faster than json_agg
     switch (config.aggregationType) {
       case 'jsonb':
       case 'array':
@@ -484,7 +484,7 @@ ${orderBySQL.replace(/ORDER BY/i, 'ORDER BY')}
   ): string {
     const { selectedFields, targetTable, foreignKey, whereClause, orderByClause, limitValue, offsetValue, isDistinct } = config;
 
-    // Helper to build jsonb_build_object expression (handles nested structures)
+    // Helper to build json_build_object expression (handles nested structures)
     const buildJsonbObject = (fields: SelectedField[], prefix: string = '', tableAlias: string = 't'): string => {
       const parts: string[] = [];
       for (const field of fields) {
@@ -497,10 +497,10 @@ ${orderBySQL.replace(/ORDER BY/i, 'ORDER BY')}
           parts.push(`'${field.alias}', ${tableAlias}.${field.expression}`);
         }
       }
-      return `jsonb_build_object(${parts.join(', ')})`;
+      return `json_build_object(${parts.join(', ')})`;
     };
 
-    // Build the JSONB fields for jsonb_build_object (handles nested structures)
+    // Build the JSONB fields for json_build_object (handles nested structures)
     const jsonbObjectExpr = buildJsonbObject(selectedFields);
 
     // Build WHERE clause (combine temp table join with additional filters)
@@ -509,7 +509,7 @@ ${orderBySQL.replace(/ORDER BY/i, 'ORDER BY')}
     // Build ORDER BY clause (use primary key DESC as default for consistent ordering matching JSONB)
     const orderBySQL = orderByClause ? `ORDER BY ${orderByClause}` : `ORDER BY "id" DESC`;
 
-    // Build jsonb_agg ORDER BY clause
+    // Build json_agg ORDER BY clause
     const jsonbAggOrderBy = orderByClause ? ` ORDER BY ${orderByClause}` : '';
 
     // If LIMIT or OFFSET is specified, use ROW_NUMBER() for per-parent pagination
@@ -523,7 +523,7 @@ ${orderBySQL.replace(/ORDER BY/i, 'ORDER BY')}
     const sql = `
 SELECT
   t."${foreignKey}" as parent_id,
-  jsonb_agg(
+  json_agg(
     ${jsonbObjectExpr}${jsonbAggOrderBy}
   ) as data
 FROM (
@@ -564,7 +564,7 @@ GROUP BY t."${foreignKey}"
     const sql = `
 SELECT
   t."${foreignKey}" as parent_id,
-  jsonb_agg(
+  json_agg(
     ${jsonbObjectExpr}
   ) as data
 FROM (

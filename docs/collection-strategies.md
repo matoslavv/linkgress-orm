@@ -114,8 +114,8 @@ const users = await db.users
 WITH "cte_0" AS (
   SELECT
     "user_id" as parent_id,
-    jsonb_agg(
-      jsonb_build_object('title', "title", 'views', "views")
+    json_agg(
+      json_build_object('title', "title", 'views', "views")
       ORDER BY "views" DESC
     ) as data
   FROM "posts"
@@ -159,8 +159,8 @@ SELECT
   COALESCE("lateral_0".data, '[]'::jsonb) as "topPosts"
 FROM "users"
 LEFT JOIN LATERAL (
-  SELECT jsonb_agg(
-    jsonb_build_object('title', "title", 'views', "views")
+  SELECT json_agg(
+    json_build_object('title', "title", 'views', "views")
   ) as data
   FROM (
     SELECT "title", "views"
@@ -230,8 +230,8 @@ INSERT INTO tmp_parent_ids_0 VALUES (1),(2),(3);
 CREATE TEMP TABLE tmp_parent_ids_0_agg AS
 SELECT
   t."user_id" as parent_id,
-  jsonb_agg(
-    jsonb_build_object('title', t."title", 'views', t."views")
+  json_agg(
+    json_build_object('title', t."title", 'views', t."views")
     ORDER BY t."views" DESC
   ) as data
 FROM "posts" t

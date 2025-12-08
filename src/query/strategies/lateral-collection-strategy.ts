@@ -33,8 +33,8 @@ import { QueryContext } from '../query-builder';
  *   COALESCE("lateral_0".data, '[]'::jsonb) as "posts"
  * FROM "users"
  * LEFT JOIN LATERAL (
- *   SELECT jsonb_agg(
- *     jsonb_build_object('id', "id", 'title', "title")
+ *   SELECT json_agg(
+ *     json_build_object('id', "id", 'title', "title")
  *     ORDER BY "views" DESC
  *   ) as data
  *   FROM (
@@ -63,6 +63,16 @@ export class LateralCollectionStrategy implements ICollectionStrategy {
     context: QueryContext
   ): CollectionAggregationResult {
     const lateralAlias = `lateral_${config.counter}`;
+
+    // Optimization: For simple aggregations without LIMIT/OFFSET/ORDER BY,
+    // use a correlated subquery in SELECT instead of LATERAL JOIN.
+    // This can be more efficient because the query planner can short-circuit
+    // when rows don't need the aggregated value.
+    const useCorrelatedSubquery = this.canUseCorrelatedSubquery(config);
+
+    if (useCorrelatedSubquery) {
+      return this.buildCorrelatedSubqueryAggregation(config, lateralAlias, context);
+    }
 
     let lateralSQL: string;
     let selectExpression: string;
@@ -101,6 +111,126 @@ export class LateralCollectionStrategy implements ICollectionStrategy {
       joinClause,
       selectExpression,
       isCTE: false, // LATERAL is not a CTE - it's an inline subquery
+    };
+  }
+
+  /**
+   * Check if we can use a correlated subquery instead of LATERAL
+   * This is more efficient for simple cases without LIMIT/OFFSET/ORDER BY
+   */
+  private canUseCorrelatedSubquery(config: CollectionAggregationConfig): boolean {
+    // Use correlated subquery for simple aggregations:
+    // - array aggregation (toNumberList, toStringList)
+    // - scalar aggregations (count, min, max, sum)
+    // - no LIMIT/OFFSET (LATERAL is required for per-row LIMIT)
+    // - no complex ORDER BY (simple cases don't need ordering preserved)
+    const isSimpleAggregation = config.aggregationType === 'array' ||
+                                 config.aggregationType === 'count' ||
+                                 config.aggregationType === 'min' ||
+                                 config.aggregationType === 'max' ||
+                                 config.aggregationType === 'sum';
+
+    const hasNoLimitOffset = config.limitValue === undefined && config.offsetValue === undefined;
+
+    // For array aggregations, ORDER BY doesn't matter for the result
+    // For scalar aggregations, ORDER BY is irrelevant
+    const orderByIrrelevant = config.aggregationType !== 'jsonb';
+
+    return isSimpleAggregation && hasNoLimitOffset && orderByIrrelevant;
+  }
+
+  /**
+   * Build a correlated subquery in SELECT instead of LATERAL JOIN
+   * This pattern: (SELECT COALESCE(agg(...), default) FROM ...)
+   * is often more efficient than: LEFT JOIN LATERAL (...) ON true
+   */
+  private buildCorrelatedSubqueryAggregation(
+    config: CollectionAggregationConfig,
+    lateralAlias: string,
+    context: QueryContext
+  ): CollectionAggregationResult {
+    const { arrayField, targetTable, foreignKey, sourceTable, whereClause, isDistinct, navigationJoins, selectedFields, aggregationType, aggregateField, defaultValue } = config;
+
+    const hasNavigationJoins = navigationJoins && navigationJoins.length > 0;
+
+    // Build navigation JOINs for multi-level navigation
+    const navJoinsSQL = this.buildNavigationJoins(navigationJoins, targetTable);
+
+    // Build WHERE clause with correlation to parent
+    let whereSQL = `"${targetTable}"."${foreignKey}" = "${sourceTable}"."id"`;
+    if (whereClause) {
+      whereSQL += ` AND ${whereClause}`;
+    }
+
+    let subquerySQL: string;
+
+    if (aggregationType === 'array') {
+      if (!arrayField) {
+        throw new Error('arrayField is required for array aggregation');
+      }
+
+      // Get the actual field expression from selectedFields (if available)
+      let fieldExpression = `"${arrayField}"`;
+      if (selectedFields && selectedFields.length > 0) {
+        const firstField = selectedFields[0];
+        if (firstField.expression && firstField.expression !== `"${arrayField}"`) {
+          fieldExpression = firstField.expression;
+        } else if (hasNavigationJoins) {
+          fieldExpression = `"${targetTable}"."${arrayField}"`;
+        }
+      }
+
+      // Build correlated subquery for array aggregation
+      // For DISTINCT, wrap in a subquery to allow HashAggregate instead of Sort
+      // Pattern: (SELECT array_agg(x) FROM (SELECT DISTINCT x FROM ...) sub)
+      // This is more efficient than array_agg(DISTINCT x) which forces a sort
+      if (isDistinct) {
+        subquerySQL = `(SELECT COALESCE(array_agg("${arrayField}"), ${defaultValue})
+FROM (SELECT DISTINCT ${fieldExpression} as "${arrayField}"
+FROM "${targetTable}"
+${navJoinsSQL}
+WHERE ${whereSQL}) "sq")`;
+      } else {
+        subquerySQL = `(SELECT COALESCE(array_agg(${fieldExpression}), ${defaultValue})
+FROM "${targetTable}"
+${navJoinsSQL}
+WHERE ${whereSQL})`;
+      }
+    } else {
+      // Scalar aggregation (count, min, max, sum)
+      let aggregateExpression: string;
+      switch (aggregationType) {
+        case 'count':
+          aggregateExpression = 'COUNT(*)';
+          break;
+        case 'min':
+        case 'max':
+        case 'sum':
+          if (!aggregateField) {
+            throw new Error(`${aggregationType.toUpperCase()} requires an aggregate field`);
+          }
+          aggregateExpression = `${aggregationType.toUpperCase()}("${aggregateField}")`;
+          break;
+        default:
+          throw new Error(`Unknown aggregation type: ${aggregationType}`);
+      }
+
+      // Build correlated subquery for scalar aggregation
+      subquerySQL = `(SELECT COALESCE(${aggregateExpression}, ${defaultValue})
+FROM "${targetTable}"
+${navJoinsSQL}
+WHERE ${whereSQL})`;
+    }
+
+    // For correlated subquery, the select expression IS the subquery
+    // No JOIN clause needed - it's embedded in SELECT
+    return {
+      sql: '', // No separate SQL - it's inline
+      params: context.allParams,
+      tableName: lateralAlias,
+      joinClause: '', // No join needed
+      selectExpression: subquerySQL,
+      isCTE: false,
     };
   }
 
@@ -160,7 +290,7 @@ export class LateralCollectionStrategy implements ICollectionStrategy {
       return result;
     };
 
-    // Helper to build jsonb_build_object expression (handles nested structures)
+    // Helper to build json_build_object expression (handles nested structures)
     const buildJsonbObject = (fields: SelectedField[], prefix: string = ''): string => {
       const parts: string[] = [];
       for (const field of fields) {
@@ -172,7 +302,7 @@ export class LateralCollectionStrategy implements ICollectionStrategy {
           parts.push(`'${field.alias}', "${fullAlias}"`);
         }
       }
-      return `jsonb_build_object(${parts.join(', ')})`;
+      return `json_build_object(${parts.join(', ')})`;
     };
 
     // Collect all leaf fields for the SELECT clause
@@ -198,7 +328,7 @@ export class LateralCollectionStrategy implements ICollectionStrategy {
       return f.expression;
     });
 
-    // Build the JSONB fields for jsonb_build_object
+    // Build the JSONB fields for json_build_object
     const jsonbObjectExpr = buildJsonbObject(selectedFields);
 
     // Build navigation JOINs for multi-level navigation
@@ -226,13 +356,13 @@ export class LateralCollectionStrategy implements ICollectionStrategy {
     // Build DISTINCT clause
     const distinctClause = isDistinct ? 'DISTINCT ' : '';
 
-    // Note: We don't add ORDER BY inside jsonb_agg because:
+    // Note: We don't add ORDER BY inside json_agg because:
     // 1. The inner subquery already applies ORDER BY before LIMIT/OFFSET
     // 2. Column aliases in the subquery may differ from original column names
     // The order is preserved from the inner query's ORDER BY
 
     const lateralSQL = `
-SELECT jsonb_agg(
+SELECT json_agg(
   ${jsonbObjectExpr}
 ) as data
 FROM (

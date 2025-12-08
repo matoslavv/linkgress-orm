@@ -102,9 +102,9 @@ describe('withQueryOptions Method', () => {
           }))
           .toList();
 
-        // JSONB strategy should use jsonb_agg in a single query
-        const sqlLogs = logs.filter(log => log.includes('SELECT') || log.includes('jsonb_agg'));
-        expect(sqlLogs.some(log => log.includes('jsonb_agg'))).toBe(true);
+        // JSON strategy should use json_agg in a single query
+        const sqlLogs = logs.filter(log => log.includes('SELECT') || log.includes('json_agg'));
+        expect(sqlLogs.some(log => log.includes('json_agg'))).toBe(true);
         expect(results.length).toBeGreaterThan(0);
       } finally {
         console.log = originalLog;

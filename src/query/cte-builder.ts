@@ -230,7 +230,7 @@ export class DbCteBuilder {
     // Use provided alias or default to 'items'
     const finalAggregationAlias = (aggregationAlias || 'items') as TAlias;
 
-    // Build jsonb_build_object with explicit columns for better performance
+    // Build json_build_object with explicit columns for better performance
     // This is more efficient than to_jsonb(t.*) which includes all columns
     const groupByColumnSet = new Set(groupByEntries.map(([, innerColumn]) => String(innerColumn)));
 
@@ -245,14 +245,17 @@ export class DbCteBuilder {
     }
 
     // Build the aggregation expression
+    // Use JSON instead of JSONB for better aggregation performance
+    // JSON is faster because it doesn't parse/validate the structure during aggregation
+    // The result is functionally equivalent for read operations
     let aggregationExpression: string;
     if (aggregatedColumns.length > 0) {
-      // Use jsonb_build_object for better performance - only include non-groupBy columns
-      const jsonbParts = aggregatedColumns.map(col => `'${col}', "${col}"`).join(', ');
-      aggregationExpression = `jsonb_agg(jsonb_build_object(${jsonbParts}))`;
+      // Use json_build_object for better performance - only include non-groupBy columns
+      const jsonParts = aggregatedColumns.map(col => `'${col}', "${col}"`).join(', ');
+      aggregationExpression = `json_agg(json_build_object(${jsonParts}))`;
     } else {
-      // Fallback to to_jsonb(t.*) if we can't determine columns
-      aggregationExpression = `jsonb_agg(to_jsonb(t.*))`;
+      // Fallback to to_json(t.*) if we can't determine columns
+      aggregationExpression = `json_agg(to_json(t.*))`;
     }
 
     const aggregationSql = `

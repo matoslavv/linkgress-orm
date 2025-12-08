@@ -1843,8 +1843,10 @@ export class SelectQueryBuilder<TSelection> {
   private getDefaultValueString(aggregationType: 'jsonb' | 'array' | 'count' | 'min' | 'max' | 'sum'): string {
     switch (aggregationType) {
       case 'jsonb':
+        // Use JSON instead of JSONB for better aggregation performance
+        return "'[]'::json";
       case 'array':
-        return "'[]'::jsonb";
+        return "'{}'";
       case 'count':
         return '0';
       case 'min':
@@ -1852,7 +1854,7 @@ export class SelectQueryBuilder<TSelection> {
       case 'sum':
         return 'null';
       default:
-        return "'[]'::jsonb";
+        return "'[]'::json";
     }
   }
 
@@ -2362,7 +2364,7 @@ export class SelectQueryBuilder<TSelection> {
           const cteJoin = this.manualJoins.find(j => j.cte && j.cte.name === tableAlias);
           if (cteJoin && cteJoin.cte && cteJoin.cte.isAggregationColumn(columnName)) {
             // CTE aggregation column - wrap with COALESCE to return empty array instead of null
-            selectParts.push(`COALESCE("${tableAlias}"."${columnName}", '[]'::jsonb) as "${key}"`);
+            selectParts.push(`COALESCE("${tableAlias}"."${columnName}", '[]'::json) as "${key}"`);
           } else {
             selectParts.push(`"${tableAlias}"."${columnName}" as "${key}"`);
           }
@@ -2538,8 +2540,8 @@ export class SelectQueryBuilder<TSelection> {
         const arrayType = flattenType === 'number' ? 'integer[]' : 'text[]';
         selectParts.push(`COALESCE("${cteName}".data, ARRAY[]::${arrayType}) as "${name}"`);
       } else {
-        // For JSON aggregation, use jsonb type
-        selectParts.push(`COALESCE("${cteName}".data, '[]'::jsonb) as "${name}"`);
+        // For JSON aggregation, use json type for better performance
+        selectParts.push(`COALESCE("${cteName}".data, '[]'::json) as "${name}"`);
       }
     }
 
@@ -4097,9 +4099,9 @@ export class CollectionQueryBuilder<TItem = any> {
       // Use typed empty array literal (PostgreSQL will infer type from array_agg)
       defaultValue = "'{}'";  // Empty array literal
     } else {
-      // JSONB aggregation (default)
+      // JSON aggregation (default) - use JSON instead of JSONB for better performance
       aggregationType = 'jsonb';
-      defaultValue = "'[]'::jsonb";
+      defaultValue = "'[]'::json";
     }
 
     // Step 5: Detect navigation joins from the selected fields

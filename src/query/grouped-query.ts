@@ -874,6 +874,16 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
 
   /**
    * Build the SQL query for grouped results
+   *
+   * Optimization: When grouping by SqlFragment expressions, we wrap the base query
+   * in a subquery to avoid repeating complex expressions in both SELECT and GROUP BY.
+   * This matches the pattern used by Drizzle and improves query performance.
+   *
+   * Without optimization:
+   *   SELECT complex_expr as "alias" FROM table GROUP BY complex_expr
+   *
+   * With optimization:
+   *   SELECT "alias" FROM (SELECT complex_expr as "alias" FROM table) q1 GROUP BY "alias"
    */
   private buildQuery(context: QueryContext): { sql: string; params: any[] } {
     // Create mocks for evaluation
@@ -893,103 +903,11 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
     };
     const mockResult = this.resultSelector(mockGroup);
 
-    // Extract GROUP BY fields from the grouping key
-    // We build these first and cache the SQL for SqlFragments so they can be reused in SELECT
-    const groupByFields: string[] = [];
-    const sqlFragmentCache = new Map<SqlFragment, string>(); // Cache built SQL for reuse in SELECT
-    for (const [key, value] of Object.entries(mockGroupingKey as object)) {
-      if (value instanceof SqlFragment) {
-        // SqlFragment in GROUP BY - build the SQL expression and cache it
-        const sqlBuildContext = {
-          paramCounter: context.paramCounter,
-          params: context.allParams,
-        };
-        const fragmentSql = value.buildSql(sqlBuildContext);
-        context.paramCounter = sqlBuildContext.paramCounter;
-        groupByFields.push(fragmentSql);
-        sqlFragmentCache.set(value, fragmentSql);
-      } else if (typeof value === 'object' && value !== null && '__dbColumnName' in value) {
-        const field = value as any;
-        const tableAlias = field.__tableAlias || this.schema.name;
-        groupByFields.push(`"${tableAlias}"."${field.__dbColumnName}"`);
-      }
-    }
-
-    // Build SELECT clause from result selector
-    const selectParts: string[] = [];
-    for (const [alias, value] of Object.entries(mockResult as object)) {
-      if (typeof value === 'object' && value !== null && '__isAggregate' in value && (value as any).__isAggregate) {
-        // This is an AggregateFieldRef (from our mock GroupedItem)
-        const aggField = value as AggregateFieldRef;
-        const aggType = aggField.__aggregateType;
-
-        if (aggType === 'COUNT') {
-          // COUNT always returns bigint, cast to integer for cleaner results
-          selectParts.push(`CAST(COUNT(*) AS INTEGER) as "${alias}"`);
-        } else if (aggField.__aggregateSelector) {
-          // SUM, MIN, MAX, AVG with selector
-          // Note: The selector references fields from the ORIGINAL SELECTION (after first .select()),
-          // not the raw table row. So we need to use mockOriginalSelection, not a fresh mock row.
-          const field = aggField.__aggregateSelector(mockOriginalSelection);
-          if (typeof field === 'object' && field !== null && '__dbColumnName' in field) {
-            const fieldRef = field as any;
-            const tableAlias = fieldRef.__tableAlias || this.schema.name;
-
-            // Cast numeric aggregates to appropriate types
-            if (aggType === 'SUM' || aggType === 'AVG') {
-              // SUM and AVG return numeric - cast to double precision for JavaScript number
-              selectParts.push(`CAST(${aggType}("${tableAlias}"."${fieldRef.__dbColumnName}") AS DOUBLE PRECISION) as "${alias}"`);
-            } else {
-              // MIN/MAX preserve the field's type - no cast needed usually, but could be added if needed
-              selectParts.push(`${aggType}("${tableAlias}"."${fieldRef.__dbColumnName}") as "${alias}"`);
-            }
-          }
-        } else {
-          // Aggregate without selector (shouldn't happen for SUM/MIN/MAX/AVG, but handle it)
-          selectParts.push(`${aggType}(*) as "${alias}"`);
-        }
-      } else if (typeof value === 'object' && value !== null && '__aggregateType' in value) {
-        // Backward compatibility: Old AggregateMarker style (if any still exist)
-        const agg = value as AggregateMarker;
-        if (agg.__aggregateType === 'COUNT') {
-          selectParts.push(`CAST(COUNT(*) AS INTEGER) as "${alias}"`);
-        } else if (agg.__selector) {
-          // Use mockOriginalSelection - the selector references fields from the first .select()
-          const field = agg.__selector(mockOriginalSelection);
-          if (typeof field === 'object' && field !== null && '__dbColumnName' in field) {
-            const fieldRef = field as any;
-            const tableAlias = fieldRef.__tableAlias || this.schema.name;
-
-            if (agg.__aggregateType === 'SUM' || agg.__aggregateType === 'AVG') {
-              selectParts.push(`CAST(${agg.__aggregateType}("${tableAlias}"."${fieldRef.__dbColumnName}") AS DOUBLE PRECISION) as "${alias}"`);
-            } else {
-              selectParts.push(`${agg.__aggregateType}("${tableAlias}"."${fieldRef.__dbColumnName}") as "${alias}"`);
-            }
-          }
-        }
-      } else if (typeof value === 'object' && value !== null && '__dbColumnName' in value) {
-        // Direct field reference from the grouping key
-        const field = value as any;
-        const tableAlias = field.__tableAlias || this.schema.name;
-        selectParts.push(`"${tableAlias}"."${field.__dbColumnName}" as "${alias}"`);
-      } else if (value instanceof SqlFragment) {
-        // SQL fragment - check if we already built this for GROUP BY
-        const cachedSql = sqlFragmentCache.get(value);
-        if (cachedSql) {
-          // Reuse the cached SQL to ensure same parameter numbers
-          selectParts.push(`${cachedSql} as "${alias}"`);
-        } else {
-          // Build new SQL for this fragment
-          const sqlBuildContext = {
-            paramCounter: context.paramCounter,
-            params: context.allParams,
-          };
-          const fragmentSql = value.buildSql(sqlBuildContext);
-          context.paramCounter = sqlBuildContext.paramCounter;
-          selectParts.push(`${fragmentSql} as "${alias}"`);
-        }
-      }
-    }
+    // Check if we have SqlFragment expressions in the grouping key
+    // If so, we'll use the subquery wrapping optimization
+    const hasSqlFragmentInGroupBy = Object.values(mockGroupingKey as object).some(
+      value => value instanceof SqlFragment
+    );
 
     // Detect navigation property references in WHERE and add JOINs
     const navigationJoins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean }> = [];
@@ -1000,8 +918,8 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
     // Detect joins from WHERE condition
     this.detectAndAddJoinsFromCondition(this.whereCond, navigationJoins);
 
-    // Build FROM clause with JOINs
-    let fromClause = `FROM "${this.schema.name}"`;
+    // Build base FROM clause with JOINs
+    let baseFromClause = `"${this.schema.name}"`;
 
     // Add navigation property JOINs first
     for (const navJoin of navigationJoins) {
@@ -1016,7 +934,7 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
         return `"${this.schema.name}"."${fk}" = "${navJoin.alias}"."${targetCol}"`;
       });
 
-      fromClause += `\n${joinType} ${targetTableName} AS "${navJoin.alias}" ON ${joinConditions.join(' AND ')}`;
+      baseFromClause += `\n${joinType} ${targetTableName} AS "${navJoin.alias}" ON ${joinConditions.join(' AND ')}`;
     }
 
     // Add manual JOINs
@@ -1035,9 +953,9 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
         };
         const subquerySql = (manualJoin as any).subquery.buildSql(subqueryBuildContext);
         context.paramCounter = subqueryBuildContext.paramCounter;
-        fromClause += `\n${joinTypeStr} (${subquerySql}) AS "${manualJoin.alias}" ON ${condSql}`;
+        baseFromClause += `\n${joinTypeStr} (${subquerySql}) AS "${manualJoin.alias}" ON ${condSql}`;
       } else {
-        fromClause += `\n${joinTypeStr} "${manualJoin.table}" AS "${manualJoin.alias}" ON ${condSql}`;
+        baseFromClause += `\n${joinTypeStr} "${manualJoin.table}" AS "${manualJoin.alias}" ON ${condSql}`;
       }
     }
 
@@ -1051,13 +969,51 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
       context.allParams.push(...params);
     }
 
+    if (hasSqlFragmentInGroupBy) {
+      // Use subquery wrapping optimization for complex GROUP BY expressions
+      return this.buildQueryWithSubqueryWrapping(context, mockOriginalSelection, mockGroupingKey, mockResult, baseFromClause, whereClause);
+    } else {
+      // Use simple query for basic GROUP BY (column references only)
+      return this.buildSimpleGroupedQuery(context, mockOriginalSelection, mockGroupingKey, mockResult, baseFromClause, whereClause);
+    }
+  }
+
+  /**
+   * Build a simple grouped query when GROUP BY only contains column references
+   */
+  private buildSimpleGroupedQuery(
+    context: QueryContext,
+    mockOriginalSelection: any,
+    mockGroupingKey: any,
+    mockResult: any,
+    baseFromClause: string,
+    whereClause: string
+  ): { sql: string; params: any[] } {
+    // Extract GROUP BY fields from the grouping key
+    const groupByFields: string[] = [];
+    for (const [key, value] of Object.entries(mockGroupingKey as object)) {
+      if (typeof value === 'object' && value !== null && '__dbColumnName' in value) {
+        const field = value as any;
+        const tableAlias = field.__tableAlias || this.schema.name;
+        groupByFields.push(`"${tableAlias}"."${field.__dbColumnName}"`);
+      }
+    }
+
+    // Build SELECT clause from result selector
+    const selectParts: string[] = [];
+    for (const [alias, value] of Object.entries(mockResult as object)) {
+      const selectPart = this.buildSelectPart(alias, value, mockOriginalSelection, context, this.schema.name);
+      if (selectPart) {
+        selectParts.push(selectPart);
+      }
+    }
+
     // Build GROUP BY clause
     const groupByClause = `GROUP BY ${groupByFields.join(', ')}`;
 
     // Build HAVING clause
     let havingClause = '';
     if (this.havingCond) {
-      // Build the HAVING condition, but we need to substitute aggregate markers with actual SQL
       const havingSql = this.buildHavingCondition(this.havingCond, context);
       havingClause = `HAVING ${havingSql}`;
     }
@@ -1080,12 +1036,256 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
       limitClause += ` OFFSET ${this.offsetValue}`;
     }
 
-    const finalQuery = `SELECT ${selectParts.join(', ')}\n${fromClause}\n${whereClause}\n${groupByClause}\n${havingClause}\n${orderByClause}\n${limitClause}`.trim();
+    const finalQuery = `SELECT ${selectParts.join(', ')}\nFROM ${baseFromClause}\n${whereClause}\n${groupByClause}\n${havingClause}\n${orderByClause}\n${limitClause}`.trim();
 
     return {
       sql: finalQuery,
       params: context.allParams,
     };
+  }
+
+  /**
+   * Build a grouped query with subquery wrapping for complex GROUP BY expressions
+   * This avoids repeating SqlFragment expressions in both SELECT and GROUP BY
+   */
+  private buildQueryWithSubqueryWrapping(
+    context: QueryContext,
+    mockOriginalSelection: any,
+    mockGroupingKey: any,
+    mockResult: any,
+    baseFromClause: string,
+    whereClause: string
+  ): { sql: string; params: any[] } {
+    // Step 1: Build the inner subquery that computes all expressions
+    // This includes: grouping key fields, fields needed for aggregates
+    const innerSelectParts: string[] = [];
+    const groupByAliases: string[] = []; // Aliases to use in outer GROUP BY
+    const sqlFragmentAliasMap = new Map<SqlFragment, string>(); // Map SqlFragment to its alias
+
+    // Add grouping key fields to inner select
+    for (const [key, value] of Object.entries(mockGroupingKey as object)) {
+      if (value instanceof SqlFragment) {
+        // Build the SqlFragment expression
+        const sqlBuildContext = {
+          paramCounter: context.paramCounter,
+          params: context.allParams,
+        };
+        const fragmentSql = value.buildSql(sqlBuildContext);
+        context.paramCounter = sqlBuildContext.paramCounter;
+        innerSelectParts.push(`${fragmentSql} as "${key}"`);
+        groupByAliases.push(`"${key}"`);
+        sqlFragmentAliasMap.set(value, key);
+      } else if (typeof value === 'object' && value !== null && '__dbColumnName' in value) {
+        const field = value as any;
+        const tableAlias = field.__tableAlias || this.schema.name;
+        innerSelectParts.push(`"${tableAlias}"."${field.__dbColumnName}" as "${key}"`);
+        groupByAliases.push(`"${key}"`);
+      }
+    }
+
+    // Add fields needed for aggregates to inner select
+    const aggregateFields = new Set<string>(); // Track fields we've already added
+    for (const [, value] of Object.entries(mockResult as object)) {
+      if (typeof value === 'object' && value !== null && '__isAggregate' in value && (value as any).__isAggregate) {
+        const aggField = value as AggregateFieldRef;
+        if (aggField.__aggregateSelector) {
+          const field = aggField.__aggregateSelector(mockOriginalSelection);
+          if (typeof field === 'object' && field !== null && '__dbColumnName' in field) {
+            const fieldRef = field as any;
+            const tableAlias = fieldRef.__tableAlias || this.schema.name;
+            const dbColName = fieldRef.__dbColumnName;
+            const fieldKey = `${tableAlias}.${dbColName}`;
+            if (!aggregateFields.has(fieldKey)) {
+              aggregateFields.add(fieldKey);
+              innerSelectParts.push(`"${tableAlias}"."${dbColName}" as "${dbColName}"`);
+            }
+          }
+        }
+      } else if (typeof value === 'object' && value !== null && '__aggregateType' in value) {
+        // Backward compatibility
+        const agg = value as AggregateMarker;
+        if (agg.__selector) {
+          const field = agg.__selector(mockOriginalSelection);
+          if (typeof field === 'object' && field !== null && '__dbColumnName' in field) {
+            const fieldRef = field as any;
+            const tableAlias = fieldRef.__tableAlias || this.schema.name;
+            const dbColName = fieldRef.__dbColumnName;
+            const fieldKey = `${tableAlias}.${dbColName}`;
+            if (!aggregateFields.has(fieldKey)) {
+              aggregateFields.add(fieldKey);
+              innerSelectParts.push(`"${tableAlias}"."${dbColName}" as "${dbColName}"`);
+            }
+          }
+        }
+      }
+    }
+
+    // Build the inner subquery
+    const innerQuery = `SELECT ${innerSelectParts.join(', ')}\nFROM ${baseFromClause}\n${whereClause}`.trim();
+
+    // Step 2: Build the outer query that groups by aliases
+    const outerSelectParts: string[] = [];
+    for (const [alias, value] of Object.entries(mockResult as object)) {
+      if (typeof value === 'object' && value !== null && '__isAggregate' in value && (value as any).__isAggregate) {
+        // Aggregate function
+        const aggField = value as AggregateFieldRef;
+        const aggType = aggField.__aggregateType;
+
+        if (aggType === 'COUNT') {
+          outerSelectParts.push(`CAST(COUNT(*) AS INTEGER) as "${alias}"`);
+        } else if (aggField.__aggregateSelector) {
+          const field = aggField.__aggregateSelector(mockOriginalSelection);
+          if (typeof field === 'object' && field !== null && '__dbColumnName' in field) {
+            const fieldRef = field as any;
+            const dbColName = fieldRef.__dbColumnName;
+            // Reference the alias from inner query
+            if (aggType === 'SUM' || aggType === 'AVG') {
+              outerSelectParts.push(`CAST(${aggType}("${dbColName}") AS DOUBLE PRECISION) as "${alias}"`);
+            } else {
+              outerSelectParts.push(`${aggType}("${dbColName}") as "${alias}"`);
+            }
+          }
+        } else {
+          outerSelectParts.push(`${aggType}(*) as "${alias}"`);
+        }
+      } else if (typeof value === 'object' && value !== null && '__aggregateType' in value) {
+        // Backward compatibility
+        const agg = value as AggregateMarker;
+        if (agg.__aggregateType === 'COUNT') {
+          outerSelectParts.push(`CAST(COUNT(*) AS INTEGER) as "${alias}"`);
+        } else if (agg.__selector) {
+          const field = agg.__selector(mockOriginalSelection);
+          if (typeof field === 'object' && field !== null && '__dbColumnName' in field) {
+            const fieldRef = field as any;
+            const dbColName = fieldRef.__dbColumnName;
+            if (agg.__aggregateType === 'SUM' || agg.__aggregateType === 'AVG') {
+              outerSelectParts.push(`CAST(${agg.__aggregateType}("${dbColName}") AS DOUBLE PRECISION) as "${alias}"`);
+            } else {
+              outerSelectParts.push(`${agg.__aggregateType}("${dbColName}") as "${alias}"`);
+            }
+          }
+        }
+      } else if (value instanceof SqlFragment) {
+        // SqlFragment - reference the alias from inner query
+        const innerAlias = sqlFragmentAliasMap.get(value);
+        if (innerAlias) {
+          outerSelectParts.push(`"${innerAlias}" as "${alias}"`);
+        }
+      } else if (typeof value === 'object' && value !== null && '__dbColumnName' in value) {
+        // Direct field reference - find the matching key in grouping key
+        const field = value as any;
+        // Look for matching alias in groupByAliases
+        for (const [key, gkValue] of Object.entries(mockGroupingKey as object)) {
+          if (gkValue === value ||
+              (typeof gkValue === 'object' && gkValue !== null && '__dbColumnName' in gkValue &&
+               (gkValue as any).__dbColumnName === field.__dbColumnName)) {
+            outerSelectParts.push(`"${key}" as "${alias}"`);
+            break;
+          }
+        }
+      }
+    }
+
+    // Build GROUP BY clause using aliases
+    const groupByClause = `GROUP BY ${groupByAliases.join(', ')}`;
+
+    // Build HAVING clause
+    let havingClause = '';
+    if (this.havingCond) {
+      const havingSql = this.buildHavingCondition(this.havingCond, context);
+      havingClause = `HAVING ${havingSql}`;
+    }
+
+    // Build ORDER BY clause
+    let orderByClause = '';
+    if (this.orderByFields.length > 0) {
+      const orderParts = this.orderByFields.map(
+        ({ field, direction }) => `"${field}" ${direction}`
+      );
+      orderByClause = `ORDER BY ${orderParts.join(', ')}`;
+    }
+
+    // Build LIMIT/OFFSET
+    let limitClause = '';
+    if (this.limitValue !== undefined) {
+      limitClause = `LIMIT ${this.limitValue}`;
+    }
+    if (this.offsetValue !== undefined) {
+      limitClause += ` OFFSET ${this.offsetValue}`;
+    }
+
+    const finalQuery = `SELECT ${outerSelectParts.join(', ')}\nFROM (${innerQuery}) "q1"\n${groupByClause}\n${havingClause}\n${orderByClause}\n${limitClause}`.trim();
+
+    return {
+      sql: finalQuery,
+      params: context.allParams,
+    };
+  }
+
+  /**
+   * Build a single SELECT part for a result field
+   */
+  private buildSelectPart(
+    alias: string,
+    value: any,
+    mockOriginalSelection: any,
+    context: QueryContext,
+    defaultTableAlias: string
+  ): string | null {
+    if (typeof value === 'object' && value !== null && '__isAggregate' in value && (value as any).__isAggregate) {
+      // This is an AggregateFieldRef (from our mock GroupedItem)
+      const aggField = value as AggregateFieldRef;
+      const aggType = aggField.__aggregateType;
+
+      if (aggType === 'COUNT') {
+        return `CAST(COUNT(*) AS INTEGER) as "${alias}"`;
+      } else if (aggField.__aggregateSelector) {
+        const field = aggField.__aggregateSelector(mockOriginalSelection);
+        if (typeof field === 'object' && field !== null && '__dbColumnName' in field) {
+          const fieldRef = field as any;
+          const tableAlias = fieldRef.__tableAlias || defaultTableAlias;
+          if (aggType === 'SUM' || aggType === 'AVG') {
+            return `CAST(${aggType}("${tableAlias}"."${fieldRef.__dbColumnName}") AS DOUBLE PRECISION) as "${alias}"`;
+          } else {
+            return `${aggType}("${tableAlias}"."${fieldRef.__dbColumnName}") as "${alias}"`;
+          }
+        }
+      } else {
+        return `${aggType}(*) as "${alias}"`;
+      }
+    } else if (typeof value === 'object' && value !== null && '__aggregateType' in value) {
+      // Backward compatibility: Old AggregateMarker style
+      const agg = value as AggregateMarker;
+      if (agg.__aggregateType === 'COUNT') {
+        return `CAST(COUNT(*) AS INTEGER) as "${alias}"`;
+      } else if (agg.__selector) {
+        const field = agg.__selector(mockOriginalSelection);
+        if (typeof field === 'object' && field !== null && '__dbColumnName' in field) {
+          const fieldRef = field as any;
+          const tableAlias = fieldRef.__tableAlias || defaultTableAlias;
+          if (agg.__aggregateType === 'SUM' || agg.__aggregateType === 'AVG') {
+            return `CAST(${agg.__aggregateType}("${tableAlias}"."${fieldRef.__dbColumnName}") AS DOUBLE PRECISION) as "${alias}"`;
+          } else {
+            return `${agg.__aggregateType}("${tableAlias}"."${fieldRef.__dbColumnName}") as "${alias}"`;
+          }
+        }
+      }
+    } else if (typeof value === 'object' && value !== null && '__dbColumnName' in value) {
+      // Direct field reference from the grouping key
+      const field = value as any;
+      const tableAlias = field.__tableAlias || defaultTableAlias;
+      return `"${tableAlias}"."${field.__dbColumnName}" as "${alias}"`;
+    } else if (value instanceof SqlFragment) {
+      // SQL fragment - build the expression
+      const sqlBuildContext = {
+        paramCounter: context.paramCounter,
+        params: context.allParams,
+      };
+      const fragmentSql = value.buildSql(sqlBuildContext);
+      context.paramCounter = sqlBuildContext.paramCounter;
+      return `${fragmentSql} as "${alias}"`;
+    }
+    return null;
   }
 
   /**

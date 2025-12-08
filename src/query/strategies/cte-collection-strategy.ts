@@ -12,7 +12,7 @@ import { QueryContext } from '../query-builder';
 /**
  * CTE-based collection strategy
  *
- * This is the current/default strategy that uses PostgreSQL CTEs with jsonb_agg
+ * This is the current/default strategy that uses PostgreSQL CTEs with json_agg
  * to aggregate related records into JSONB arrays.
  *
  * Benefits:
@@ -25,8 +25,8 @@ import { QueryContext } from '../query-builder';
  * WITH "cte_0" AS (
  *   SELECT
  *     "user_id" as parent_id,
- *     jsonb_agg(
- *       jsonb_build_object('id', "id", 'title', "title")
+ *     json_agg(
+ *       json_build_object('id', "id", 'title', "title")
  *       ORDER BY "views" DESC
  *     ) as data
  *   FROM (
@@ -115,7 +115,8 @@ export class CteCollectionStrategy implements ICollectionStrategy {
   }
 
   /**
-   * Helper to build jsonb_build_object expression (handles nested structures)
+   * Helper to build json_build_object expression (handles nested structures)
+   * Uses JSON instead of JSONB for better aggregation performance
    */
   private buildJsonbObject(fields: SelectedField[], prefix: string = ''): string {
     const parts: string[] = [];
@@ -130,7 +131,7 @@ export class CteCollectionStrategy implements ICollectionStrategy {
         parts.push(`'${field.alias}', "${fullAlias}"`);
       }
     }
-    return `jsonb_build_object(${parts.join(', ')})`;
+    return `json_build_object(${parts.join(', ')})`;
   }
 
   /**
@@ -181,7 +182,7 @@ export class CteCollectionStrategy implements ICollectionStrategy {
     // Collect all leaf fields for the SELECT clause
     const leafFields = this.collectLeafFields(selectedFields);
 
-    // Build the JSONB fields for jsonb_build_object (handles nested structures)
+    // Build the JSONB fields for json_build_object (handles nested structures)
     const jsonbObjectExpr = this.buildJsonbObject(selectedFields);
 
     // Build WHERE clause
@@ -226,14 +227,14 @@ export class CteCollectionStrategy implements ICollectionStrategy {
     // Build ORDER BY clause
     const orderBySQL = orderByClause ? `ORDER BY ${orderByClause}` : '';
 
-    // Build the jsonb_agg ORDER BY clause
-    const jsonbAggOrderBy = orderByClause ? ` ORDER BY ${orderByClause}` : '';
+    // Build the json_agg ORDER BY clause
+    const jsonAggOrderBy = orderByClause ? ` ORDER BY ${orderByClause}` : '';
 
     const cteSQL = `
 SELECT
   "__fk_${foreignKey}" as parent_id,
-  jsonb_agg(
-    ${jsonbObjectExpr}${jsonbAggOrderBy}
+  json_agg(
+    ${jsonbObjectExpr}${jsonAggOrderBy}
   ) as data
 FROM (
   SELECT ${distinctClause}${allSelectFields.join(', ')}
@@ -253,7 +254,7 @@ GROUP BY "__fk_${foreignKey}"
    *
    * SQL Pattern:
    * ```sql
-   * SELECT parent_id, jsonb_agg(jsonb_build_object(...)) as data
+   * SELECT parent_id, json_agg(json_build_object(...)) as data
    * FROM (
    *   SELECT *, ROW_NUMBER() OVER (PARTITION BY foreign_key ORDER BY ...) as __rn
    *   FROM (SELECT ... FROM table WHERE ...) inner_sub
@@ -312,7 +313,7 @@ GROUP BY "__fk_${foreignKey}"
     const cteSQL = `
 SELECT
   "__fk_${foreignKey}" as parent_id,
-  jsonb_agg(
+  json_agg(
     ${jsonbObjectExpr}
   ) as data
 FROM (
