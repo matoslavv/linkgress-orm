@@ -252,22 +252,39 @@ export function notExists(subquery: Subquery): NotExistsCondition {
 }
 
 /**
+ * Extract the non-undefined type from a potentially undefined type
+ */
+type NonUndefined<T> = T extends undefined ? never : T;
+
+/**
  * IN subquery condition
+ *
+ * Supports both required and optional fields:
+ * - Required field: `inSubquery(p.userId, subquery)` where userId is number
+ * - Optional field: `inSubquery(u.age!, agesSubquery)` where age is number | undefined
+ *
+ * For optional fields, use non-null assertion (!) or check for undefined before calling.
  */
 export function inSubquery<T>(
-  field: FieldRef<any, T>,
-  subquery: Subquery<T[], 'array'>
-): InSubqueryCondition<T> {
+  field: FieldRef<any, NonUndefined<T>>,
+  subquery: Subquery<NonUndefined<T>[], 'array'>
+): InSubqueryCondition<NonUndefined<T>> {
   return new InSubqueryCondition(field, subquery);
 }
 
 /**
  * NOT IN subquery condition
+ *
+ * Supports both required and optional fields:
+ * - Required field: `notInSubquery(p.userId, subquery)` where userId is number
+ * - Optional field: `notInSubquery(u.age!, agesSubquery)` where age is number | undefined
+ *
+ * For optional fields, use non-null assertion (!) or check for undefined before calling.
  */
 export function notInSubquery<T>(
-  field: FieldRef<any, T>,
-  subquery: Subquery<T[], 'array'>
-): NotInSubqueryCondition<T> {
+  field: FieldRef<any, NonUndefined<T>>,
+  subquery: Subquery<NonUndefined<T>[], 'array'>
+): NotInSubqueryCondition<NonUndefined<T>> {
   return new NotInSubqueryCondition(field, subquery);
 }
 

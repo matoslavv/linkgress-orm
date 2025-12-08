@@ -1,6 +1,6 @@
 import { describe, test, expect } from '@jest/globals';
 import { withDatabase, seedTestData } from '../utils/test-database';
-import { eq, gt, sql, DbCteBuilder, exists, and, gte, lte, EntityQuery } from '../../src';
+import { eq, gt, sql, DbCteBuilder, exists, and, gte, lte, EntityQuery, inSubquery, notInSubquery } from '../../src';
 import { Post } from '../../debug/model/post';
 import { Order } from '../../debug/model/order';
 import { User } from '../../debug/model/user';
@@ -2647,6 +2647,249 @@ describe('Subquery Operations', () => {
           expect(typeof r.megaSummary).toBe('string');
           expect(r.megaSummary).toContain('User:');
           expect(r.megaSummary).toContain(r.finalUserName);
+        });
+      });
+    });
+  });
+
+  describe('inSubquery and notInSubquery', () => {
+    describe('inSubquery', () => {
+      test('should filter records where field is IN subquery result', async () => {
+        await withDatabase(async (db) => {
+          await seedTestData(db);
+
+          // Get IDs of active users
+          const activeUserIdsSubquery = db.users
+            .where(u => eq(u.isActive, true))
+            .select(u => u.id)
+            .asSubquery('array');
+
+          // Get posts from active users using inSubquery
+          const result = await db.posts
+            .where(p => inSubquery(p.userId, activeUserIdsSubquery))
+            .select(p => ({
+              title: p.title,
+              userId: p.userId,
+            }))
+            .toList();
+
+          expect(result.length).toBeGreaterThan(0);
+          result.forEach(r => {
+            assertType<string, typeof r.title>(r.title);
+            assertType<number, typeof r.userId>(r.userId);
+          });
+
+          // Verify all returned posts are from active users
+          const activeUsers = await db.users
+            .where(u => eq(u.isActive, true))
+            .select(u => ({ id: u.id }))
+            .toList();
+          const activeUserIds = new Set(activeUsers.map(u => u.id));
+
+          result.forEach(r => {
+            expect(activeUserIds.has(r.userId)).toBe(true);
+          });
+        });
+      });
+
+      test('should work with string field in subquery', async () => {
+        await withDatabase(async (db) => {
+          await seedTestData(db);
+
+          // Get usernames of users with posts
+          const usernamesWithPostsSubquery = db.posts
+            .innerJoin(
+              db.users,
+              (post, user) => eq(post.userId, user.id),
+              (post, user) => user.username,
+              'poster'
+            )
+            .asSubquery('array');
+
+          // Find users whose username is in the list
+          const result = await db.users
+            .where(u => inSubquery(u.username, usernamesWithPostsSubquery))
+            .select(u => ({
+              id: u.id,
+              username: u.username,
+            }))
+            .toList();
+
+          expect(result.length).toBeGreaterThan(0);
+          result.forEach(r => {
+            assertType<number, typeof r.id>(r.id);
+            assertType<string, typeof r.username>(r.username);
+          });
+        });
+      });
+
+      test('should work with combined conditions using and()', async () => {
+        await withDatabase(async (db) => {
+          await seedTestData(db);
+
+          // Get IDs of users aged >= 25
+          const olderUserIdsSubquery = db.users
+            .where(u => gte(u.age, 25))
+            .select(u => u.id)
+            .asSubquery('array');
+
+          // Get posts from older users with views > 100
+          const result = await db.posts
+            .where(p => and(
+              inSubquery(p.userId, olderUserIdsSubquery),
+              gt(p.views, 100)
+            ))
+            .select(p => ({
+              title: p.title,
+              userId: p.userId,
+              views: p.views,
+            }))
+            .toList();
+
+          // Verify results match both conditions
+          result.forEach(r => {
+            expect(r.views).toBeGreaterThan(100);
+          });
+        });
+      });
+    });
+
+    describe('notInSubquery', () => {
+      test('should filter records where field is NOT IN subquery result', async () => {
+        await withDatabase(async (db) => {
+          await seedTestData(db);
+
+          // Get IDs of active users
+          const activeUserIdsSubquery = db.users
+            .where(u => eq(u.isActive, true))
+            .select(u => u.id)
+            .asSubquery('array');
+
+          // Get posts from inactive users using notInSubquery
+          const result = await db.posts
+            .where(p => notInSubquery(p.userId, activeUserIdsSubquery))
+            .select(p => ({
+              title: p.title,
+              userId: p.userId,
+            }))
+            .toList();
+
+          result.forEach(r => {
+            assertType<string, typeof r.title>(r.title);
+            assertType<number, typeof r.userId>(r.userId);
+          });
+
+          // Verify no returned posts are from active users
+          const activeUsers = await db.users
+            .where(u => eq(u.isActive, true))
+            .select(u => ({ id: u.id }))
+            .toList();
+          const activeUserIds = new Set(activeUsers.map(u => u.id));
+
+          result.forEach(r => {
+            expect(activeUserIds.has(r.userId)).toBe(false);
+          });
+        });
+      });
+
+      test('should return all records when subquery returns empty set', async () => {
+        await withDatabase(async (db) => {
+          await seedTestData(db);
+
+          // Get IDs of users with impossible condition (empty result)
+          const impossibleUserIds = db.users
+            .where(u => eq(u.age, -999))
+            .select(u => u.id)
+            .asSubquery('array');
+
+          // notInSubquery with empty set should return all records
+          const allPosts = await db.posts
+            .select(p => ({ id: p.id }))
+            .toList();
+
+          const filteredPosts = await db.posts
+            .where(p => notInSubquery(p.userId, impossibleUserIds))
+            .select(p => ({ id: p.id }))
+            .toList();
+
+          // Note: NOT IN (empty set) returns all rows in SQL
+          expect(filteredPosts.length).toBe(allPosts.length);
+        });
+      });
+
+      test('should work with combined conditions', async () => {
+        await withDatabase(async (db) => {
+          await seedTestData(db);
+
+          // Get IDs of users with high-view posts
+          const highViewUserIds = db.posts
+            .where(p => gt(p.views, 150))
+            .select(p => p.userId)
+            .asSubquery('array');
+
+          // Get posts NOT from high-view users but with views > 50
+          const result = await db.posts
+            .where(p => and(
+              notInSubquery(p.userId, highViewUserIds),
+              gt(p.views, 50)
+            ))
+            .select(p => ({
+              title: p.title,
+              userId: p.userId,
+              views: p.views,
+            }))
+            .toList();
+
+          result.forEach(r => {
+            expect(r.views).toBeGreaterThan(50);
+          });
+        });
+      });
+    });
+
+    describe('Type safety', () => {
+      test('should enforce type compatibility between field and subquery', async () => {
+        await withDatabase(async (db) => {
+          await seedTestData(db);
+
+          // This should compile - number field with number[] subquery
+          const numericSubquery = db.users
+            .select(u => u.id)
+            .asSubquery('array');
+
+          // Type: Subquery<number[], 'array'>
+          const _typeCheck1: typeof numericSubquery extends import('../../src/query/subquery').Subquery<number[], 'array'> ? true : false = true;
+
+          const result = await db.posts
+            .where(p => inSubquery(p.userId, numericSubquery))
+            .select(p => ({ id: p.id }))
+            .toList();
+
+          expect(Array.isArray(result)).toBe(true);
+        });
+      });
+
+      test('should work with required fields from different tables', async () => {
+        await withDatabase(async (db) => {
+          await seedTestData(db);
+
+          // Get view counts from posts
+          const viewsSubquery = db.posts
+            .where(p => gt(p.views, 0))
+            .select(p => p.views)
+            .asSubquery('array');
+
+          // Find posts with matching view counts
+          const result = await db.posts
+            .where(p => inSubquery(p.views, viewsSubquery))
+            .select(p => ({
+              title: p.title,
+              views: p.views,
+            }))
+            .toList();
+
+          expect(Array.isArray(result)).toBe(true);
+          expect(result.length).toBeGreaterThan(0);
         });
       });
     });
