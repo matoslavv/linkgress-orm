@@ -1593,7 +1593,7 @@ export class GroupedJoinedQueryBuilder<TSelection, TLeft, TRight> {
           if (typeof leftValue === 'object' && leftValue !== null && typeof (leftValue as any).getMapper === 'function') {
             enhancedMetadata[key] = {
               ...value,
-              getMapper: (leftValue as any).getMapper,
+              getMapper: () => (leftValue as any).getMapper(),
             };
             continue;
           }

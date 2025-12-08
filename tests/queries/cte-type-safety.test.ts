@@ -223,15 +223,14 @@ describe('CTE Type Safety and Custom Type Fields', () => {
           expect(post).toHaveProperty('views');
           expect(post).toHaveProperty('publishTime');
           expect(post).toHaveProperty('customDate');
-          // Note: The TYPE SYSTEM indicates userId should not be in AggregatedItemType
-          // but the SQL implementation currently includes all fields
-          // This is a known limitation - the type system is correct though
-          expect(post).toHaveProperty('userId'); // Currently included in SQL results
+          // userId is correctly excluded from aggregated items since it's a groupBy key
+          // This matches the TypeScript type AggregatedItemType<TSelection, TKey>
+          expect(post).not.toHaveProperty('userId');
         });
       });
     });
 
-    test('should validate type system for aggregation (SQL includes all fields currently)', async () => {
+    test('should validate type system for aggregation (groupBy keys excluded)', async () => {
       await withDatabase(async (db) => {
         const user = await db.users.insert({
           username: 'exclusion_test_user',
@@ -294,9 +293,9 @@ describe('CTE Type Safety and Custom Type Fields', () => {
         expect(item).toHaveProperty('publishTime');
         expect(item).toHaveProperty('customDate');
         expect(item).toHaveProperty('views');
-        // Note: TypeScript type AggregatedItemType<TSelection, TKey> indicates userId
-        // should be excluded, but SQL implementation currently includes all fields
-        expect(item).toHaveProperty('userId'); // Currently included in SQL
+        // userId is correctly excluded from aggregated items since it's a groupBy key
+        // This matches the TypeScript type AggregatedItemType<TSelection, TKey>
+        expect(item).not.toHaveProperty('userId');
       });
     });
   });
@@ -380,10 +379,10 @@ describe('CTE Type Safety and Custom Type Fields', () => {
             expect(post).toHaveProperty('views');
             expect(post).toHaveProperty('publishTime');
 
-            // Note: TypeScript AggregatedItemType excludes grouping keys
-            // but SQL implementation currently includes all fields
-            expect(post).toHaveProperty('userId');
-            expect(post).toHaveProperty('customDate');
+            // Grouping keys (userId, customDate) are correctly excluded
+            // This matches TypeScript AggregatedItemType<TSelection, TKey>
+            expect(post).not.toHaveProperty('userId');
+            expect(post).not.toHaveProperty('customDate');
           });
         });
       });

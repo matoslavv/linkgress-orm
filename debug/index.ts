@@ -11,6 +11,7 @@ import {
   lt
 } from '../src';
 import { AppDatabase } from './schema/appDatabase';
+import PgIntDateTimeUtils from './types/pgIntDatetimeUtils';
 
 /**
  * Entity-First Approach with DbColumn<T> for Full Type Safety
@@ -977,7 +978,11 @@ async function main() {
         userId: p.userId,
         identifier: sql<number>`CASE WHEN ${p.user!.id} < ${10} THEN ${p.id} ELSE -1 END`.as('id'),
         kekes: p.content,
-        distinctDay: p.customDate
+        distinctDay: PgIntDateTimeUtils.getLocalDay(
+          p.customDate,
+          'Europe/Bratislava', // FIXME: Timezone: should not be static
+          'distinctDay',
+        ),
       })).groupBy(p => ({
         userId: p.userId,
         identifier: p.identifier,

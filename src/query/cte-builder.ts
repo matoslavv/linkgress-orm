@@ -1,6 +1,6 @@
 import { DatabaseClient } from '../database/database-client.interface';
 import { QueryBuilder, SelectQueryBuilder, ResolveCollectionResults } from './query-builder';
-import { SqlBuildContext, FieldRef, UnwrapSelection } from './conditions';
+import { SqlBuildContext, FieldRef, UnwrapSelection, SqlFragment } from './conditions';
 
 /**
  * Interface for queries that can be used in CTEs
@@ -230,15 +230,34 @@ export class DbCteBuilder {
     // Use provided alias or default to 'items'
     const finalAggregationAlias = (aggregationAlias || 'items') as TAlias;
 
-    // For aggregation CTEs, we need to exclude the grouping columns from the aggregated items
-    // This implements AggregatedItemType<TSelection, TKey> at the SQL level
-    // However, getting all column names requires introspection we don't have access to here
-    // So we'll use jsonb_agg with to_jsonb which includes all columns
-    // The type system will indicate which fields should be excluded
+    // Build jsonb_build_object with explicit columns for better performance
+    // This is more efficient than to_jsonb(t.*) which includes all columns
+    const groupByColumnSet = new Set(groupByEntries.map(([, innerColumn]) => String(innerColumn)));
+
+    // Get all column names from inner selection metadata, excluding groupBy columns
+    const aggregatedColumns: string[] = [];
+    if (innerSelectionMetadata) {
+      for (const key of Object.keys(innerSelectionMetadata)) {
+        if (!groupByColumnSet.has(key)) {
+          aggregatedColumns.push(key);
+        }
+      }
+    }
+
+    // Build the aggregation expression
+    let aggregationExpression: string;
+    if (aggregatedColumns.length > 0) {
+      // Use jsonb_build_object for better performance - only include non-groupBy columns
+      const jsonbParts = aggregatedColumns.map(col => `'${col}', "${col}"`).join(', ');
+      aggregationExpression = `jsonb_agg(jsonb_build_object(${jsonbParts}))`;
+    } else {
+      // Fallback to to_jsonb(t.*) if we can't determine columns
+      aggregationExpression = `jsonb_agg(to_jsonb(t.*))`;
+    }
 
     const aggregationSql = `
       SELECT ${selectColumns},
-             jsonb_agg(to_jsonb(t.*)) as "${finalAggregationAlias}"
+             ${aggregationExpression} as "${finalAggregationAlias}"
       FROM (${innerSql}) t
       GROUP BY ${groupByClause}
     `.trim();
@@ -256,8 +275,36 @@ export class DbCteBuilder {
     // Store inner selection metadata for mapper preservation during result transformation
     // The aggregation column contains items that need mappers applied
     const selectionMetadata: Record<string, any> = {};
-    groupByEntries.forEach(([outputAlias]) => {
-      selectionMetadata[outputAlias] = outputAlias;
+    groupByEntries.forEach(([outputAlias, innerColumn]) => {
+      const innerCol = String(innerColumn);
+      // Check if inner selection metadata has mapper info for this column
+      if (innerSelectionMetadata && innerCol in innerSelectionMetadata) {
+        const innerValue = innerSelectionMetadata[innerCol];
+        // If inner value has getMapper, preserve it
+        if (typeof innerValue === 'object' && innerValue !== null && typeof innerValue.getMapper === 'function') {
+          selectionMetadata[outputAlias] = {
+            __fieldName: outputAlias,
+            __dbColumnName: outputAlias,
+            getMapper: innerValue.getMapper,
+          };
+        } else if (innerValue instanceof SqlFragment) {
+          // SqlFragment with mapper
+          const mapper = innerValue.getMapper();
+          if (mapper) {
+            selectionMetadata[outputAlias] = {
+              __fieldName: outputAlias,
+              __dbColumnName: outputAlias,
+              getMapper: () => mapper,
+            };
+          } else {
+            selectionMetadata[outputAlias] = outputAlias;
+          }
+        } else {
+          selectionMetadata[outputAlias] = outputAlias;
+        }
+      } else {
+        selectionMetadata[outputAlias] = outputAlias;
+      }
     });
     // Store inner selection metadata under the aggregation alias so mappers can be applied to items
     selectionMetadata[finalAggregationAlias] = {
