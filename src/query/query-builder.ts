@@ -1567,6 +1567,11 @@ export class SelectQueryBuilder<TSelection> {
       ? await this.executor.query(sql, params)
       : await this.client.query(sql, params);
 
+    // If rawResult is enabled, return raw rows without any processing
+    if (this.executor?.getOptions().rawResult) {
+      return result.rows;
+    }
+
     // Transform results
     return this.transformResults(result.rows, selectionResult) as any;
   }
@@ -1601,6 +1606,11 @@ export class SelectQueryBuilder<TSelection> {
     const baseResult = this.executor
       ? await this.executor.query(baseSql, baseParams)
       : await this.client.query(baseSql, baseParams);
+
+    // If rawResult is enabled, return raw rows without any processing
+    if (this.executor?.getOptions().rawResult) {
+      return baseResult.rows;
+    }
 
     if (baseResult.rows.length === 0) {
       return [];
@@ -1740,6 +1750,12 @@ export class SelectQueryBuilder<TSelection> {
 
     // Parse result sets: [0]=CREATE, [1]=base, [2..N]=collections, [N+1]=DROP
     const baseResult = resultSets[1];
+
+    // If rawResult is enabled, return raw rows without any processing
+    if (this.executor?.getOptions().rawResult) {
+      return baseResult?.rows || [];
+    }
+
     if (!baseResult || baseResult.rows.length === 0) {
       return [];
     }

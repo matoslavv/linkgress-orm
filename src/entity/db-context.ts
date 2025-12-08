@@ -80,6 +80,14 @@ export interface QueryOptions {
    * Default: false (uses text protocol)
    */
   useBinaryProtocol?: boolean;
+  /**
+   * Return raw database result without any ORM processing.
+   * When enabled, the raw rows from the database driver are returned as-is,
+   * skipping all ORM transformations (mapping, result shaping, etc.).
+   * Useful for debugging or when you need direct access to the database result.
+   * Default: false
+   */
+  rawResult?: boolean;
 }
 
 /**
