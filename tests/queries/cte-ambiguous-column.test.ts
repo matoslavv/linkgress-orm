@@ -304,6 +304,22 @@ describe('CTE with Navigation and GroupBy - Ambiguous Column Bug', () => {
             id: user.id,
             username: user.username,
             groupedPosts: cte.groupedPosts,
+            orderIds: user.orders!.select(od => ({
+              id: od.id
+            })).toNumberList(),
+            ordersOne: user.orders!.select(od => ({
+              id: od.id,
+              tasksHeavy: od.orderTasks!.select(ot => ({
+                id: ot.task!.id,
+                hard: ot.task!.level!.createdBy!.email
+              })).toList('tasksHeavy'),
+              tasks: od.orderTasks!.select(ot => ({
+                id: ot.task!.id
+              })).toNumberList()
+            })),
+            postIds: user.posts!.select(p => ({
+              ds: p.id
+            }))
           }),
         )
         .toList();

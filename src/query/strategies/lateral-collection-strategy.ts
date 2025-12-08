@@ -256,11 +256,30 @@ FROM (
     lateralAlias: string,
     context: QueryContext
   ): string {
-    const { arrayField, targetTable, foreignKey, sourceTable, whereClause, orderByClause, limitValue, offsetValue, isDistinct } = config;
+    const { arrayField, targetTable, foreignKey, sourceTable, whereClause, orderByClause, limitValue, offsetValue, isDistinct, navigationJoins, selectedFields } = config;
 
     if (!arrayField) {
       throw new Error('arrayField is required for array aggregation');
     }
+
+    const hasNavigationJoins = navigationJoins && navigationJoins.length > 0;
+
+    // Get the actual field expression from selectedFields (if available)
+    // This handles navigation properties like p.user!.id which need to be "user"."id"
+    let fieldExpression = `"${arrayField}"`;
+    if (selectedFields && selectedFields.length > 0) {
+      const firstField = selectedFields[0];
+      if (firstField.expression && firstField.expression !== `"${arrayField}"`) {
+        // Use the actual expression (e.g., "user"."id") instead of just the alias
+        fieldExpression = firstField.expression;
+      } else if (hasNavigationJoins) {
+        // If we have navigation joins but no explicit expression, qualify with target table
+        fieldExpression = `"${targetTable}"."${arrayField}"`;
+      }
+    }
+
+    // Build navigation JOINs for multi-level navigation
+    const navJoinsSQL = this.buildNavigationJoins(navigationJoins, targetTable);
 
     // Build WHERE clause with LATERAL correlation
     let whereSQL = `WHERE "${targetTable}"."${foreignKey}" = "${sourceTable}"."id"`;
@@ -290,8 +309,9 @@ SELECT array_agg(
   "${arrayField}"
 ) as data
 FROM (
-  SELECT ${distinctClause}"${arrayField}"
+  SELECT ${distinctClause}${fieldExpression} as "${arrayField}"
   FROM "${targetTable}"
+  ${navJoinsSQL}
   ${whereSQL}
   ${orderBySQL}
   ${limitOffsetClause}

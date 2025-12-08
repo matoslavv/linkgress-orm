@@ -342,7 +342,7 @@ GROUP BY "__fk_${foreignKey}"
     cteName: string,
     context: QueryContext
   ): string {
-    const { arrayField, targetTable, foreignKey, whereClause, orderByClause, limitValue, offsetValue, isDistinct } = config;
+    const { arrayField, targetTable, foreignKey, whereClause, orderByClause, limitValue, offsetValue, isDistinct, navigationJoins, selectedFields } = config;
 
     if (!arrayField) {
       throw new Error('arrayField is required for array aggregation');
@@ -354,9 +354,27 @@ GROUP BY "__fk_${foreignKey}"
     // Build DISTINCT clause
     const distinctClause = isDistinct ? 'DISTINCT ' : '';
 
+    // Build navigation JOINs for multi-level navigation (like toList does)
+    const navJoinsSQL = this.buildNavigationJoins(navigationJoins, targetTable);
+    const hasNavigationJoins = navigationJoins && navigationJoins.length > 0;
+
     // If LIMIT or OFFSET is specified, use ROW_NUMBER() for per-parent pagination
     if (limitValue !== undefined || offsetValue !== undefined) {
-      return this.buildArrayAggregationWithRowNumber(config, whereSQL, distinctClause);
+      return this.buildArrayAggregationWithRowNumber(config, whereSQL, distinctClause, navJoinsSQL);
+    }
+
+    // Get the actual field expression from selectedFields (if available)
+    // This handles navigation properties like p.user!.id which need to be "user"."id"
+    let fieldExpression = `"${arrayField}"`;
+    if (selectedFields && selectedFields.length > 0) {
+      const firstField = selectedFields[0];
+      if (firstField.expression && firstField.expression !== `"${arrayField}"`) {
+        // Use the actual expression (e.g., "user"."id") instead of just the alias
+        fieldExpression = firstField.expression;
+      } else if (hasNavigationJoins) {
+        // If we have navigation joins but no explicit expression, qualify with target table
+        fieldExpression = `"${targetTable}"."${arrayField}"`;
+      }
     }
 
     // No LIMIT/OFFSET - use simple aggregation
@@ -365,6 +383,11 @@ GROUP BY "__fk_${foreignKey}"
 
     // Build the array_agg ORDER BY clause
     const arrayAggOrderBy = orderByClause ? ` ORDER BY ${orderByClause}` : '';
+
+    // Qualify the foreign key with target table when there are navigation joins
+    const fkExpression = hasNavigationJoins
+      ? `"${targetTable}"."${foreignKey}"`
+      : `"${foreignKey}"`;
 
     const cteSQL = `
 SELECT
@@ -375,8 +398,9 @@ SELECT
 FROM (
   SELECT ${distinctClause}"__fk_${foreignKey}", "${arrayField}"
   FROM (
-    SELECT "${foreignKey}" as "__fk_${foreignKey}", "${arrayField}"
+    SELECT ${fkExpression} as "__fk_${foreignKey}", ${fieldExpression} as "${arrayField}"
     FROM "${targetTable}"
+    ${navJoinsSQL}
     ${whereSQL}
     ${orderBySQL}
   ) inner_sub
@@ -393,9 +417,28 @@ GROUP BY "__fk_${foreignKey}"
   private buildArrayAggregationWithRowNumber(
     config: CollectionAggregationConfig,
     whereSQL: string,
-    distinctClause: string
+    distinctClause: string,
+    navJoinsSQL: string
   ): string {
-    const { arrayField, targetTable, foreignKey, orderByClause, limitValue, offsetValue } = config;
+    const { arrayField, targetTable, foreignKey, orderByClause, limitValue, offsetValue, navigationJoins, selectedFields } = config;
+
+    const hasNavigationJoins = navigationJoins && navigationJoins.length > 0;
+
+    // Get the actual field expression from selectedFields (if available)
+    let fieldExpression = `"${arrayField}"`;
+    if (selectedFields && selectedFields.length > 0) {
+      const firstField = selectedFields[0];
+      if (firstField.expression && firstField.expression !== `"${arrayField}"`) {
+        fieldExpression = firstField.expression;
+      } else if (hasNavigationJoins) {
+        fieldExpression = `"${targetTable}"."${arrayField}"`;
+      }
+    }
+
+    // Qualify the foreign key with target table when there are navigation joins
+    const fkExpression = hasNavigationJoins
+      ? `"${targetTable}"."${foreignKey}"`
+      : `"${foreignKey}"`;
 
     // Build ORDER BY for ROW_NUMBER() - use the order clause or default to foreign key
     const rowNumberOrderBy = orderByClause || `"__fk_${foreignKey}"`;
@@ -418,8 +461,9 @@ SELECT
 FROM (
   SELECT *, ROW_NUMBER() OVER (PARTITION BY "__fk_${foreignKey}" ORDER BY ${rowNumberOrderBy}) as "__rn"
   FROM (
-    SELECT ${distinctClause}"${foreignKey}" as "__fk_${foreignKey}", "${arrayField}"
+    SELECT ${distinctClause}${fkExpression} as "__fk_${foreignKey}", ${fieldExpression} as "${arrayField}"
     FROM "${targetTable}"
+    ${navJoinsSQL}
     ${whereSQL}
   ) inner_sub
 ) sub
