@@ -504,6 +504,63 @@ describe('Advanced Navigation Properties', () => {
       });
     });
 
+    test('should use SQL fragment with navigation property reference in select', async () => {
+      // This tests the fix for sql fragments containing navigation property references
+      // e.g., sql`CASE WHEN ${p.user.isActive} = true THEN 'active' ELSE 'inactive' END`
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        const postsWithUserStatus = await db.posts
+          .select(p => ({
+            title: p.title,
+            // SQL fragment with navigation property reference - should auto-join to users table
+            userStatus: sql<string>`CASE WHEN ${p.user!.isActive} = true THEN 'active' ELSE 'inactive' END`,
+            userName: p.user!.username, // Also include direct reference for comparison
+          }))
+          .toList();
+
+        expect(postsWithUserStatus.length).toBeGreaterThan(0);
+        postsWithUserStatus.forEach(post => {
+          // Type assertions
+          assertType<string | undefined, typeof post.title>(post.title);
+          assertType<string, typeof post.userStatus>(post.userStatus);
+          assertType<string, typeof post.userName>(post.userName);
+          // Verify the status matches the expected pattern
+          expect(['active', 'inactive']).toContain(post.userStatus);
+        });
+
+        // Verify that alice's posts show 'active' (since alice is active)
+        const alicePost = postsWithUserStatus.find(p => p.userName === 'alice');
+        expect(alicePost).toBeDefined();
+        expect(alicePost!.userStatus).toBe('active');
+
+        // Verify that charlie's posts (if any) would show 'inactive' (since charlie is inactive)
+        // Note: In the test seed data, charlie has no posts, but this verifies the logic works
+      });
+    });
+
+    test('should use SQL fragment with navigation property in complex CASE expression', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        const postsWithComputedField = await db.posts
+          .select(p => ({
+            title: p.title,
+            // Complex SQL fragment with multiple navigation property references
+            authorInfo: sql<string>`${p.user!.username} || ' (age: ' || COALESCE(${p.user!.age}::text, 'unknown') || ')'`,
+          }))
+          .toList();
+
+        expect(postsWithComputedField.length).toBeGreaterThan(0);
+        postsWithComputedField.forEach(post => {
+          assertType<string | undefined, typeof post.title>(post.title);
+          assertType<string, typeof post.authorInfo>(post.authorInfo);
+          // Should contain username and age info
+          expect(post.authorInfo).toMatch(/\w+ \(age: \d+\)/);
+        });
+      });
+    });
+
     test('should filter collections with SQL fragments', async () => {
       await withDatabase(async (db) => {
         await seedTestData(db);

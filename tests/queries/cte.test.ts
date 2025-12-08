@@ -1058,4 +1058,176 @@ describe('CTE (Common Table Expression) Support', () => {
       });
     });
   });
+
+  describe('SQL fragments with navigation properties in aggregation CTEs', () => {
+    test('should handle SQL fragment with navigation property in grouped query joined with aggregation CTE', async () => {
+      // This test focuses on:
+      // 1. First aggregation CTE groups orders by user
+      // 2. Second aggregation CTE is a grouped posts query joined to the first CTE
+      // 3. Final query joins to the second CTE
+      await withDatabase(async (db) => {
+        const { users, posts, orders } = await seedTestData(db);
+
+        const cteBuilder = new DbCteBuilder();
+
+        // First aggregation CTE: aggregate order totals by user
+        const orderTotalsCte = cteBuilder.withAggregation(
+          'order_totals_cte',
+          db.orders.select(o => ({
+            oderId: o.id,
+            orderUserId: o.userId,
+            orderTotal: o.totalAmount,
+            orderStatus: o.status,
+          })),
+          o => ({ orderUserId: o.orderUserId }),
+          'orderItems'
+        );
+
+        // Second aggregation CTE: posts grouped by userId with aggregate, joined to first CTE
+        const postStatsCte = cteBuilder.withAggregation(
+          'post_stats_cte',
+          db.posts
+            .select(p => ({
+              postId: p.id,
+              postUserId: p.userId,
+              postTitle: p.title,
+              postViews: p.views,
+            }))
+            .groupBy(p => ({
+              postUserId: p.postUserId,
+            }))
+            .select(g => ({
+              postUserId: g.key.postUserId,
+              totalViews: g.sum(p => p.postViews),
+            }))
+            .leftJoin(
+              orderTotalsCte,
+              (post, order) => eq(post.postUserId, order.orderUserId),
+              (post, order) => ({
+                postUserId: post.postUserId,
+                totalViews: post.totalViews,
+                orderItems: order.orderItems,
+              })
+            ),
+          p => ({ postUserId: p.postUserId }),
+          'postStats'
+        );
+
+        // Final query: join users with the post stats CTE
+        const result = await db.users
+          .with(...cteBuilder.getCtes())
+          .leftJoin(
+            postStatsCte,
+            (user, stats) => eq(user.id, stats.postUserId),
+            (user, stats) => ({
+              userId: user.id,
+              username: user.username,
+              isActive: user.isActive,
+              postStats: stats.postStats,
+            })
+          )
+          .toList();
+
+        expect(result.length).toBeGreaterThan(0);
+
+        // Type assertions
+        result.forEach(r => {
+          assertType<number, typeof r.userId>(r.userId);
+          assertType<string, typeof r.username>(r.username);
+          assertType<boolean, typeof r.isActive>(r.isActive);
+        });
+
+        // Verify alice has posts and is active
+        const aliceResult = result.find(r => r.username === 'alice');
+        expect(aliceResult).toBeDefined();
+        expect(aliceResult!.isActive).toBe(true);
+        // Alice should have post stats since she has posts
+        expect(aliceResult!.postStats).toBeDefined();
+        if (aliceResult!.postStats && aliceResult!.postStats.length > 0) {
+          const stats = aliceResult!.postStats[0] as any;
+          // Should have totalViews (aggregate) and orderItems (from joined CTE)
+          expect(stats.totalViews).toBeDefined();
+        }
+
+        // Verify charlie has no posts (so postStats should be empty or null)
+        const charlieResult = result.find(r => r.username === 'charlie');
+        expect(charlieResult).toBeDefined();
+        expect(charlieResult!.isActive).toBe(false);
+      });
+    });
+
+    test('should handle multiple SQL fragments with navigation properties in single grouped CTE', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        const cteBuilder = new DbCteBuilder();
+
+        // Aggregation CTE with multiple SQL fragments using navigation properties
+        const postDetailsCte = cteBuilder.withAggregation(
+          'post_details_cte',
+          db.posts
+            .select(p => ({
+              postId: p.id,
+              postUserId: p.userId,
+              // Multiple SQL fragments with navigation property references
+              authorName: sql<string>`${p.user!.username}`,
+              authorAge: sql<number>`COALESCE(${p.user!.age}, 0)`,
+              authorStatus: sql<string>`CASE WHEN ${p.user!.isActive} THEN 'active' ELSE 'inactive' END`,
+              viewCount: p.views,
+            }))
+            .groupBy(p => ({
+              postUserId: p.postUserId,
+              authorName: p.authorName,
+              authorAge: p.authorAge,
+              authorStatus: p.authorStatus,
+            }))
+            .select(g => ({
+              postUserId: g.key.postUserId,
+              authorName: g.key.authorName,
+              authorAge: g.key.authorAge,
+              authorStatus: g.key.authorStatus,
+              totalViews: g.sum(p => p.viewCount),
+              postCount: g.count(),
+            })),
+          p => ({ postUserId: p.postUserId }),
+          'details'
+        );
+
+        const result = await db.users
+          .with(postDetailsCte)
+          .leftJoin(
+            postDetailsCte,
+            (user, details) => eq(user.id, details.postUserId),
+            (user, details) => ({
+              userId: user.id,
+              username: user.username,
+              details: details.details,
+            })
+          )
+          .toList();
+
+        expect(result.length).toBeGreaterThan(0);
+
+        // Type assertions
+        result.forEach(r => {
+          assertType<number, typeof r.userId>(r.userId);
+          assertType<string, typeof r.username>(r.username);
+        });
+
+        // Find alice's result
+        const aliceResult = result.find(r => r.username === 'alice');
+        expect(aliceResult).toBeDefined();
+        expect(aliceResult!.details).toBeDefined();
+
+        if (aliceResult!.details && aliceResult!.details.length > 0) {
+          const detail = aliceResult!.details[0] as any;
+          // Verify the navigation property values were correctly computed
+          expect(detail.authorName).toBe('alice');
+          expect(detail.authorAge).toBe(25);
+          expect(detail.authorStatus).toBe('active');
+          expect(detail.postCount).toBeGreaterThan(0);
+        }
+      });
+    });
+  });
 });

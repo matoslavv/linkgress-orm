@@ -766,13 +766,35 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
     const mockRow = this.createMockRow();
     const mockOriginalSelection = this.originalSelector(mockRow);
     const mockGroupingKey = this.groupingKeySelector(mockOriginalSelection as TOriginalRow);
-    const mockGroup = this.createMockGroupedItem();
+
+    // Create mock grouped item using the SAME grouping key (not a fresh one)
+    // This ensures SqlFragment instances are shared between GROUP BY and SELECT
+    const mockGroup: GroupedItem<TGroupingKey, TOriginalRow> = {
+      key: mockGroupingKey as any,
+      count: () => createAggregateFieldRef<number>('COUNT') as any,
+      sum: (selector: any) => createAggregateFieldRef<number>('SUM', selector) as any,
+      min: (selector: any) => createAggregateFieldRef('MIN', selector) as any,
+      max: (selector: any) => createAggregateFieldRef('MAX', selector) as any,
+      avg: (selector: any) => createAggregateFieldRef<number>('AVG', selector) as any,
+    };
     const mockResult = this.resultSelector(mockGroup);
 
     // Extract GROUP BY fields from the grouping key
+    // We build these first and cache the SQL for SqlFragments so they can be reused in SELECT
     const groupByFields: string[] = [];
+    const sqlFragmentCache = new Map<SqlFragment, string>(); // Cache built SQL for reuse in SELECT
     for (const [key, value] of Object.entries(mockGroupingKey as object)) {
-      if (typeof value === 'object' && value !== null && '__dbColumnName' in value) {
+      if (value instanceof SqlFragment) {
+        // SqlFragment in GROUP BY - build the SQL expression and cache it
+        const sqlBuildContext = {
+          paramCounter: context.paramCounter,
+          params: context.allParams,
+        };
+        const fragmentSql = value.buildSql(sqlBuildContext);
+        context.paramCounter = sqlBuildContext.paramCounter;
+        groupByFields.push(fragmentSql);
+        sqlFragmentCache.set(value, fragmentSql);
+      } else if (typeof value === 'object' && value !== null && '__dbColumnName' in value) {
         const field = value as any;
         const tableAlias = field.__tableAlias || this.schema.name;
         groupByFields.push(`"${tableAlias}"."${field.__dbColumnName}"`);
@@ -792,8 +814,9 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
           selectParts.push(`CAST(COUNT(*) AS INTEGER) as "${alias}"`);
         } else if (aggField.__aggregateSelector) {
           // SUM, MIN, MAX, AVG with selector
-          const mockOriginalRow = this.createMockRow();
-          const field = aggField.__aggregateSelector(mockOriginalRow);
+          // Note: The selector references fields from the ORIGINAL SELECTION (after first .select()),
+          // not the raw table row. So we need to use mockOriginalSelection, not a fresh mock row.
+          const field = aggField.__aggregateSelector(mockOriginalSelection);
           if (typeof field === 'object' && field !== null && '__dbColumnName' in field) {
             const fieldRef = field as any;
             const tableAlias = fieldRef.__tableAlias || this.schema.name;
@@ -817,8 +840,8 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
         if (agg.__aggregateType === 'COUNT') {
           selectParts.push(`CAST(COUNT(*) AS INTEGER) as "${alias}"`);
         } else if (agg.__selector) {
-          const mockOriginalRow = this.createMockRow();
-          const field = agg.__selector(mockOriginalRow);
+          // Use mockOriginalSelection - the selector references fields from the first .select()
+          const field = agg.__selector(mockOriginalSelection);
           if (typeof field === 'object' && field !== null && '__dbColumnName' in field) {
             const fieldRef = field as any;
             const tableAlias = fieldRef.__tableAlias || this.schema.name;
@@ -836,14 +859,21 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
         const tableAlias = field.__tableAlias || this.schema.name;
         selectParts.push(`"${tableAlias}"."${field.__dbColumnName}" as "${alias}"`);
       } else if (value instanceof SqlFragment) {
-        // SQL fragment
-        const sqlBuildContext = {
-          paramCounter: context.paramCounter,
-          params: context.allParams,
-        };
-        const fragmentSql = value.buildSql(sqlBuildContext);
-        context.paramCounter = sqlBuildContext.paramCounter;
-        selectParts.push(`${fragmentSql} as "${alias}"`);
+        // SQL fragment - check if we already built this for GROUP BY
+        const cachedSql = sqlFragmentCache.get(value);
+        if (cachedSql) {
+          // Reuse the cached SQL to ensure same parameter numbers
+          selectParts.push(`${cachedSql} as "${alias}"`);
+        } else {
+          // Build new SQL for this fragment
+          const sqlBuildContext = {
+            paramCounter: context.paramCounter,
+            params: context.allParams,
+          };
+          const fragmentSql = value.buildSql(sqlBuildContext);
+          context.paramCounter = sqlBuildContext.paramCounter;
+          selectParts.push(`${fragmentSql} as "${alias}"`);
+        }
       }
     }
 
@@ -1120,32 +1150,52 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
     for (const [, value] of Object.entries(selection)) {
       if (value && typeof value === 'object' && '__tableAlias' in value && '__dbColumnName' in value) {
         // This is a FieldRef with a table alias - check if it's from a related table
-        const tableAlias = (value as any).__tableAlias as string;
-        if (tableAlias !== this.schema.name && !joins.some(j => j.alias === tableAlias)) {
-          // This references a related table - find the relation and add a JOIN
-          const relation = this.schema.relations[tableAlias];
-          if (relation && relation.type === 'one') {
-            // Get target schema from targetTableBuilder if available
-            let targetSchema: string | undefined;
-            if (relation.targetTableBuilder) {
-              const targetTableSchema = relation.targetTableBuilder.build();
-              targetSchema = targetTableSchema.schema;
-            }
-
-            // Add a JOIN for this reference
-            joins.push({
-              alias: tableAlias,
-              targetTable: relation.targetTable,
-              targetSchema,
-              foreignKeys: relation.foreignKeys || [relation.foreignKey || ''],
-              matches: relation.matches || [],
-              isMandatory: relation.isMandatory ?? false,
-            });
-          }
+        this.addJoinForFieldRef(value, joins);
+      } else if (value instanceof SqlFragment) {
+        // SqlFragment may contain navigation property references - extract them
+        const fieldRefs = value.getFieldRefs();
+        for (const fieldRef of fieldRefs) {
+          this.addJoinForFieldRef(fieldRef, joins);
         }
       } else if (value && typeof value === 'object' && !Array.isArray(value)) {
         // Recursively check nested objects
         this.detectAndAddJoinsFromSelection(value, joins);
+      }
+    }
+  }
+
+  /**
+   * Add a JOIN for a FieldRef if it references a related table
+   */
+  private addJoinForFieldRef(
+    fieldRef: any,
+    joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean }>
+  ): void {
+    if (!fieldRef || typeof fieldRef !== 'object' || !('__tableAlias' in fieldRef) || !('__dbColumnName' in fieldRef)) {
+      return;
+    }
+
+    const tableAlias = fieldRef.__tableAlias as string;
+    if (tableAlias && tableAlias !== this.schema.name && !joins.some(j => j.alias === tableAlias)) {
+      // This references a related table - find the relation and add a JOIN
+      const relation = this.schema.relations[tableAlias];
+      if (relation && relation.type === 'one') {
+        // Get target schema from targetTableBuilder if available
+        let targetSchema: string | undefined;
+        if (relation.targetTableBuilder) {
+          const targetTableSchema = relation.targetTableBuilder.build();
+          targetSchema = targetTableSchema.schema;
+        }
+
+        // Add a JOIN for this reference
+        joins.push({
+          alias: tableAlias,
+          targetTable: relation.targetTable,
+          targetSchema,
+          foreignKeys: relation.foreignKeys || [relation.foreignKey || ''],
+          matches: relation.matches || [],
+          isMandatory: relation.isMandatory ?? false,
+        });
       }
     }
   }
@@ -1399,20 +1449,30 @@ export class GroupedJoinedQueryBuilder<TSelection, TLeft, TRight> {
   }
 
   /**
+   * Get CTEs used by this query builder
+   * @internal
+   */
+  getReferencedCtes(): DbCte<any>[] {
+    return this.cte ? [this.cte] : [];
+  }
+
+  /**
    * Build SQL for use in CTEs - public interface for CTE builder
+   * This returns SQL WITHOUT the WITH clause - CTEs should be extracted separately via getReferencedCtes()
    * @internal
    */
   buildCteQuery(queryContext: QueryContext): { sql: string; params: any[] } {
-    return this.buildQuery(queryContext);
+    return this.buildQuery(queryContext, true);
   }
 
   /**
    * Build the SQL query
+   * @param skipCteClause If true, don't include WITH clause (for embedding in outer CTEs)
    */
-  private buildQuery(context: QueryContext): { sql: string; params: any[] } {
-    // Build CTE clause if needed
+  private buildQuery(context: QueryContext, skipCteClause: boolean = false): { sql: string; params: any[] } {
+    // Build CTE clause if needed (unless we're being embedded in another CTE)
     let cteClause = '';
-    if (this.cte) {
+    if (this.cte && !skipCteClause) {
       cteClause = `WITH "${this.cte.name}" AS (${this.cte.query})\n`;
       context.allParams.push(...this.cte.params);
       context.paramCounter += this.cte.params.length;

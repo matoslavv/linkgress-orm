@@ -3,6 +3,7 @@ import { TableSchema } from '../schema/table-builder';
 import type { DatabaseClient } from '../database/database-client.interface';
 import type { QueryExecutor, OrderDirection } from '../entity/db-context';
 import { parseOrderBy, getTableAlias } from './query-utils';
+import { createNestedFieldRefProxy } from './query-builder';
 
 /**
  * Join type
@@ -218,15 +219,10 @@ export class JoinQueryBuilder<TLeft, TRight> {
         Object.defineProperty(mock, relName, {
           get: () => {
             const targetSchema = relConfig.targetTableBuilder?.build();
+            const nestedAlias = `${alias}_${relName}`;
             if (!targetSchema) {
-              // Fallback proxy
-              return new Proxy({}, {
-                get: (target, prop) => ({
-                  __fieldName: prop as string,
-                  __dbColumnName: prop as string,
-                  __tableAlias: `${alias}_${relName}`,
-                })
-              });
+              // Fallback: use the shared nested proxy that supports deep property access
+              return createNestedFieldRefProxy(nestedAlias);
             }
 
             const nestedMock: any = {};
@@ -236,7 +232,7 @@ export class JoinQueryBuilder<TLeft, TRight> {
                 get: () => ({
                   __fieldName: nestedColName,
                   __dbColumnName: nestedDbColumnName,
-                  __tableAlias: `${alias}_${relName}`,
+                  __tableAlias: nestedAlias,
                   __navigationPath: [alias, relName],
                 }),
                 enumerable: true,

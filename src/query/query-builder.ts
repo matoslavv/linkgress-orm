@@ -10,6 +10,58 @@ import { CollectionStrategyFactory } from './collection-strategy.factory';
 import type { CollectionAggregationConfig, SelectedField } from './collection-strategy.interface';
 
 /**
+ * Creates a nested proxy that supports accessing properties at any depth.
+ * This allows patterns like `p.product.priceMode` to work even without full schema information.
+ * Each property access returns an object that is both a FieldRef and can be further accessed.
+ *
+ * @param tableAlias The table alias to use for the FieldRef
+ * @returns A proxy that creates FieldRefs for any property access
+ */
+export function createNestedFieldRefProxy(tableAlias: string): any {
+  const handler: ProxyHandler<any> = {
+    get: (_target: any, prop: string | symbol) => {
+      // Handle Symbol.toPrimitive for string conversion (used in template literals)
+      if (prop === Symbol.toPrimitive || prop === 'toString' || prop === 'valueOf') {
+        return () => `[NestedFieldRefProxy:${tableAlias}]`;
+      }
+      if (typeof prop === 'symbol') return undefined;
+      // Return an object that is both a FieldRef AND a proxy for further nesting
+      const fieldRef = {
+        __fieldName: prop,
+        __dbColumnName: prop,
+        __tableAlias: tableAlias,
+      };
+      // Return a proxy that acts as both the FieldRef and allows further property access
+      return new Proxy(fieldRef, {
+        get: (fieldTarget: any, nestedProp: string | symbol) => {
+          // Handle Symbol.toPrimitive for string conversion (used in template literals)
+          if (nestedProp === Symbol.toPrimitive || nestedProp === 'toString' || nestedProp === 'valueOf') {
+            return () => fieldTarget.__dbColumnName;
+          }
+          if (typeof nestedProp === 'symbol') return undefined;
+          // If accessing FieldRef properties, return them
+          if (nestedProp === '__fieldName' || nestedProp === '__dbColumnName' || nestedProp === '__tableAlias') {
+            return fieldTarget[nestedProp];
+          }
+          // Otherwise, treat as nested navigation and create a new nested proxy
+          // The nested table alias is the property name (e.g., 'product' for p.product)
+          return createNestedFieldRefProxy(prop as string)[nestedProp];
+        },
+        has: (_fieldTarget, _nestedProp) => true,
+      });
+    },
+    has: (_target, prop) => {
+      // The outer proxy doesn't have FieldRef properties - only field names
+      if (prop === '__fieldName' || prop === '__dbColumnName' || prop === '__tableAlias') {
+        return false;
+      }
+      return true;
+    },
+  };
+  return new Proxy({}, handler);
+}
+
+/**
  * Join type
  */
 export type JoinType = 'INNER' | 'LEFT';
@@ -632,7 +684,12 @@ export class SelectQueryBuilder<TSelection> {
    *   .toList();
    */
   with(...ctes: DbCte<any>[]): this {
-    this.ctes.push(...ctes);
+    // Add CTEs, avoiding duplicates by name
+    for (const cte of ctes) {
+      if (!this.ctes.some(existing => existing.name === cte.name)) {
+        this.ctes.push(cte);
+      }
+    }
     return this;
   }
 
@@ -1977,32 +2034,49 @@ export class SelectQueryBuilder<TSelection> {
     for (const [key, value] of Object.entries(selection)) {
       if (value && typeof value === 'object' && '__tableAlias' in value && '__dbColumnName' in value) {
         // This is a FieldRef with a table alias - check if it's from a related table
-        const tableAlias = value.__tableAlias as string;
-        if (tableAlias !== this.schema.name && !joins.some(j => j.alias === tableAlias)) {
-          // This references a related table - find the relation and add a JOIN
-          const relation = this.schema.relations[tableAlias];
-          if (relation && relation.type === 'one') {
-            // Get target schema from targetTableBuilder if available
-            let targetSchema: string | undefined;
-            if (relation.targetTableBuilder) {
-              const targetTableSchema = relation.targetTableBuilder.build();
-              targetSchema = targetTableSchema.schema;
-            }
-
-            // Add a JOIN for this reference
-            joins.push({
-              alias: tableAlias,
-              targetTable: relation.targetTable,
-              targetSchema,
-              foreignKeys: relation.foreignKeys || [relation.foreignKey || ''],
-              matches: relation.matches || [],
-              isMandatory: relation.isMandatory ?? false,
-            });
-          }
+        this.addJoinForFieldRef(value, joins);
+      } else if (value instanceof SqlFragment) {
+        // SqlFragment may contain navigation property references - extract them
+        const fieldRefs = value.getFieldRefs();
+        for (const fieldRef of fieldRefs) {
+          this.addJoinForFieldRef(fieldRef, joins);
         }
       } else if (value && typeof value === 'object' && !Array.isArray(value)) {
         // Recursively check nested objects
         this.detectAndAddJoinsFromSelection(value, joins);
+      }
+    }
+  }
+
+  /**
+   * Add a JOIN for a FieldRef if it references a related table
+   */
+  private addJoinForFieldRef(fieldRef: any, joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean }>): void {
+    if (!fieldRef || typeof fieldRef !== 'object' || !('__tableAlias' in fieldRef) || !('__dbColumnName' in fieldRef)) {
+      return;
+    }
+
+    const tableAlias = fieldRef.__tableAlias as string;
+    if (tableAlias && tableAlias !== this.schema.name && !joins.some(j => j.alias === tableAlias)) {
+      // This references a related table - find the relation and add a JOIN
+      const relation = this.schema.relations[tableAlias];
+      if (relation && relation.type === 'one') {
+        // Get target schema from targetTableBuilder if available
+        let targetSchema: string | undefined;
+        if (relation.targetTableBuilder) {
+          const targetTableSchema = relation.targetTableBuilder.build();
+          targetSchema = targetTableSchema.schema;
+        }
+
+        // Add a JOIN for this reference
+        joins.push({
+          alias: tableAlias,
+          targetTable: relation.targetTable,
+          targetSchema,
+          foreignKeys: relation.foreignKeys || [relation.foreignKey || ''],
+          matches: relation.matches || [],
+          isMandatory: relation.isMandatory ?? false,
+        });
       }
     }
   }
@@ -3129,15 +3203,8 @@ export class ReferenceQueryBuilder<TItem = any> {
 
       return mock;
     } else {
-      // Fallback: generic proxy
-      const handler = {
-        get: (target: any, prop: string) => ({
-          __fieldName: prop,
-          __dbColumnName: prop,
-          __tableAlias: this.relationName,
-        }),
-      };
-      return new Proxy({}, handler);
+      // Fallback: use the shared nested proxy that supports deep property access
+      return createNestedFieldRefProxy(this.relationName);
     }
   }
 }
@@ -3322,14 +3389,8 @@ export class CollectionQueryBuilder<TItem = any> {
       this._cachedMockItem = mock;
       return mock;
     } else {
-      // Fallback: generic proxy (don't cache as it's dynamic)
-      const handler = {
-        get: (target: any, prop: string) => ({
-          __fieldName: prop,
-          __dbColumnName: prop,
-        }),
-      };
-      return new Proxy({}, handler);
+      // Fallback: use the shared nested proxy that supports deep property access
+      return createNestedFieldRefProxy(this.targetTable);
     }
   }
 

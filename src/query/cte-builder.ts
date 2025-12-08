@@ -236,6 +236,9 @@ export class DbCteBuilder {
    * - SelectQueryBuilder: uses createMockRow() and selector()
    * - GroupedSelectQueryBuilder: uses buildCteQuery()
    * - GroupedJoinedQueryBuilder: uses buildCteQuery()
+   *
+   * This also extracts any CTEs referenced by the inner query and adds them to this builder
+   * to avoid duplicate CTE definitions in nested queries.
    */
   private buildInnerQuerySql(query: any, context: SqlBuildContext): string {
     const queryContext = {
@@ -244,6 +247,18 @@ export class DbCteBuilder {
       paramCounter: context.paramCounter,
       allParams: context.params,
     };
+
+    // Extract referenced CTEs from the query and add them to this builder
+    // This ensures CTEs are defined at the outermost level, not nested
+    if (typeof query.getReferencedCtes === 'function') {
+      const referencedCtes = query.getReferencedCtes() as DbCte<any>[];
+      for (const cte of referencedCtes) {
+        // Only add if not already present (avoid duplicates)
+        if (!this.ctes.some(existing => existing.name === cte.name)) {
+          this.ctes.push(cte);
+        }
+      }
+    }
 
     // Check for grouped query builders that have buildCteQuery method
     if (typeof query.buildCteQuery === 'function') {
