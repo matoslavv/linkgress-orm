@@ -5,6 +5,7 @@ import {
   CollectionAggregationConfig,
   CollectionAggregationResult,
   SelectedField,
+  NavigationJoin,
 } from '../collection-strategy.interface';
 import { QueryContext } from '../query-builder';
 
@@ -104,6 +105,38 @@ export class LateralCollectionStrategy implements ICollectionStrategy {
   }
 
   /**
+   * Build navigation JOINs SQL for multi-level navigation in collection queries
+   */
+  private buildNavigationJoins(navigationJoins: NavigationJoin[] | undefined, targetTable: string): string {
+    if (!navigationJoins || navigationJoins.length === 0) {
+      return '';
+    }
+
+    const joinClauses: string[] = [];
+
+    for (const join of navigationJoins) {
+      const joinType = join.isMandatory ? 'INNER JOIN' : 'LEFT JOIN';
+      const qualifiedTable = join.targetSchema
+        ? `"${join.targetSchema}"."${join.targetTable}"`
+        : `"${join.targetTable}"`;
+
+      // Build the ON clause
+      // foreignKeys are the columns in the source table
+      // matches are the columns in the target table (usually primary keys)
+      const onConditions: string[] = [];
+      for (let i = 0; i < join.foreignKeys.length; i++) {
+        const fk = join.foreignKeys[i];
+        const pk = join.matches[i] || 'id';
+        onConditions.push(`"${join.sourceAlias}"."${fk}" = "${join.alias}"."${pk}"`);
+      }
+
+      joinClauses.push(`${joinType} ${qualifiedTable} "${join.alias}" ON ${onConditions.join(' AND ')}`);
+    }
+
+    return joinClauses.join('\n  ');
+  }
+
+  /**
    * Build JSONB aggregation using LATERAL
    */
   private buildJsonbAggregation(
@@ -111,7 +144,7 @@ export class LateralCollectionStrategy implements ICollectionStrategy {
     lateralAlias: string,
     context: QueryContext
   ): string {
-    const { selectedFields, targetTable, foreignKey, sourceTable, whereClause, orderByClause, limitValue, offsetValue, isDistinct } = config;
+    const { selectedFields, targetTable, foreignKey, sourceTable, whereClause, orderByClause, limitValue, offsetValue, isDistinct, navigationJoins } = config;
 
     // Helper to collect all leaf fields from a potentially nested structure
     const collectLeafFields = (fields: SelectedField[], prefix: string = ''): Array<{ alias: string; expression: string }> => {
@@ -145,8 +178,20 @@ export class LateralCollectionStrategy implements ICollectionStrategy {
     // Collect all leaf fields for the SELECT clause
     const leafFields = collectLeafFields(selectedFields);
 
+    // When there are navigation joins, we need to qualify unqualified field expressions
+    // with the target table name to avoid ambiguous column references
+    const hasNavigationJoins = navigationJoins && navigationJoins.length > 0;
+
     // Build the subquery SELECT fields (no foreign key needed since we correlate with parent)
     const allSelectFields = leafFields.map(f => {
+      // If expression is just a quoted column name (e.g., `"id"`), qualify it with target table
+      // But if it's already qualified (e.g., `"user"."username"`), leave it as is
+      const isSimpleColumn = /^"[^".]+"$/.test(f.expression);
+      if (isSimpleColumn && hasNavigationJoins) {
+        // Extract column name and qualify with target table
+        const columnName = f.expression.slice(1, -1); // Remove quotes
+        return `"${targetTable}"."${columnName}" as "${f.alias}"`;
+      }
       if (f.expression !== `"${f.alias}"`) {
         return `${f.expression} as "${f.alias}"`;
       }
@@ -155,6 +200,9 @@ export class LateralCollectionStrategy implements ICollectionStrategy {
 
     // Build the JSONB fields for jsonb_build_object
     const jsonbObjectExpr = buildJsonbObject(selectedFields);
+
+    // Build navigation JOINs for multi-level navigation
+    const navJoinsSQL = this.buildNavigationJoins(navigationJoins, targetTable);
 
     // Build WHERE clause - LATERAL correlates with parent via foreign key
     // The correlation is: target.foreignKey = source.id
@@ -190,6 +238,7 @@ SELECT jsonb_agg(
 FROM (
   SELECT ${distinctClause}${allSelectFields.join(', ')}
   FROM "${targetTable}"
+  ${navJoinsSQL}
   ${whereSQL}
   ${orderBySQL}
   ${limitOffsetClause}

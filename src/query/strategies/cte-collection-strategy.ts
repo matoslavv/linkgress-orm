@@ -5,6 +5,7 @@ import {
   CollectionAggregationConfig,
   CollectionAggregationResult,
   SelectedField,
+  NavigationJoin,
 } from '../collection-strategy.interface';
 import { QueryContext } from '../query-builder';
 
@@ -133,6 +134,38 @@ export class CteCollectionStrategy implements ICollectionStrategy {
   }
 
   /**
+   * Build navigation JOINs SQL for multi-level navigation in collection queries
+   */
+  private buildNavigationJoins(navigationJoins: NavigationJoin[] | undefined, targetTable: string): string {
+    if (!navigationJoins || navigationJoins.length === 0) {
+      return '';
+    }
+
+    const joinClauses: string[] = [];
+
+    for (const join of navigationJoins) {
+      const joinType = join.isMandatory ? 'INNER JOIN' : 'LEFT JOIN';
+      const qualifiedTable = join.targetSchema
+        ? `"${join.targetSchema}"."${join.targetTable}"`
+        : `"${join.targetTable}"`;
+
+      // Build the ON clause
+      // foreignKeys are the columns in the source table
+      // matches are the columns in the target table (usually primary keys)
+      const onConditions: string[] = [];
+      for (let i = 0; i < join.foreignKeys.length; i++) {
+        const fk = join.foreignKeys[i];
+        const pk = join.matches[i] || 'id';
+        onConditions.push(`"${join.sourceAlias}"."${fk}" = "${join.alias}"."${pk}"`);
+      }
+
+      joinClauses.push(`${joinType} ${qualifiedTable} "${join.alias}" ON ${onConditions.join(' AND ')}`);
+    }
+
+    return joinClauses.join('\n  ');
+  }
+
+  /**
    * Build JSONB aggregation CTE
    *
    * When LIMIT/OFFSET is specified, uses ROW_NUMBER() window function to correctly
@@ -143,7 +176,7 @@ export class CteCollectionStrategy implements ICollectionStrategy {
     cteName: string,
     context: QueryContext
   ): string {
-    const { selectedFields, targetTable, foreignKey, whereClause, orderByClause, limitValue, offsetValue, isDistinct } = config;
+    const { selectedFields, targetTable, foreignKey, whereClause, orderByClause, limitValue, offsetValue, isDistinct, navigationJoins } = config;
 
     // Collect all leaf fields for the SELECT clause
     const leafFields = this.collectLeafFields(selectedFields);
@@ -157,18 +190,32 @@ export class CteCollectionStrategy implements ICollectionStrategy {
     // Build DISTINCT clause
     const distinctClause = isDistinct ? 'DISTINCT ' : '';
 
+    // Build navigation JOINs for multi-level navigation
+    const navJoinsSQL = this.buildNavigationJoins(navigationJoins, targetTable);
+
     // If LIMIT or OFFSET is specified, use ROW_NUMBER() for per-parent pagination
     if (limitValue !== undefined || offsetValue !== undefined) {
       return this.buildJsonbAggregationWithRowNumber(
-        config, leafFields, jsonbObjectExpr, whereSQL, distinctClause
+        config, leafFields, jsonbObjectExpr, whereSQL, distinctClause, navJoinsSQL
       );
     }
 
     // No LIMIT/OFFSET - use simple aggregation
     // Build the subquery SELECT fields
+    // When there are navigation joins, we need to qualify unqualified field expressions
+    // with the target table name to avoid ambiguous column references
+    const hasNavigationJoins = navigationJoins && navigationJoins.length > 0;
     const allSelectFields = [
-      `"${foreignKey}" as "__fk_${foreignKey}"`,
+      `"${targetTable}"."${foreignKey}" as "__fk_${foreignKey}"`,
       ...leafFields.map(f => {
+        // If expression is just a quoted column name (e.g., `"id"`), qualify it with target table
+        // But if it's already qualified (e.g., `"user"."username"`), leave it as is
+        const isSimpleColumn = /^"[^".]+"$/.test(f.expression);
+        if (isSimpleColumn && hasNavigationJoins) {
+          // Extract column name and qualify with target table
+          const columnName = f.expression.slice(1, -1); // Remove quotes
+          return `"${targetTable}"."${columnName}" as "${f.alias}"`;
+        }
         if (f.expression !== `"${f.alias}"`) {
           return `${f.expression} as "${f.alias}"`;
         }
@@ -191,6 +238,7 @@ SELECT
 FROM (
   SELECT ${distinctClause}${allSelectFields.join(', ')}
   FROM "${targetTable}"
+  ${navJoinsSQL}
   ${whereSQL}
   ${orderBySQL}
 ) sub
@@ -219,14 +267,27 @@ GROUP BY "__fk_${foreignKey}"
     leafFields: Array<{ alias: string; expression: string }>,
     jsonbObjectExpr: string,
     whereSQL: string,
-    distinctClause: string
+    distinctClause: string,
+    navJoinsSQL: string
   ): string {
-    const { targetTable, foreignKey, orderByClause, limitValue, offsetValue } = config;
+    const { targetTable, foreignKey, orderByClause, limitValue, offsetValue, navigationJoins } = config;
+
+    // When there are navigation joins, we need to qualify unqualified field expressions
+    // with the target table name to avoid ambiguous column references
+    const hasNavigationJoins = navigationJoins && navigationJoins.length > 0;
 
     // Build the innermost SELECT fields
     const innerSelectFields = [
-      `"${foreignKey}" as "__fk_${foreignKey}"`,
+      `"${targetTable}"."${foreignKey}" as "__fk_${foreignKey}"`,
       ...leafFields.map(f => {
+        // If expression is just a quoted column name (e.g., `"id"`), qualify it with target table
+        // But if it's already qualified (e.g., `"user"."username"`), leave it as is
+        const isSimpleColumn = /^"[^".]+"$/.test(f.expression);
+        if (isSimpleColumn && hasNavigationJoins) {
+          // Extract column name and qualify with target table
+          const columnName = f.expression.slice(1, -1); // Remove quotes
+          return `"${targetTable}"."${columnName}" as "${f.alias}"`;
+        }
         if (f.expression !== `"${f.alias}"`) {
           return `${f.expression} as "${f.alias}"`;
         }
@@ -259,6 +320,7 @@ FROM (
   FROM (
     SELECT ${distinctClause}${innerSelectFields.join(', ')}
     FROM "${targetTable}"
+    ${navJoinsSQL}
     ${whereSQL}
   ) inner_sub
 ) sub

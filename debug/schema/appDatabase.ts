@@ -4,10 +4,12 @@ import { Order } from "../model/order";
 import { Post } from "../model/post";
 import { User } from "../model/user";
 import { Task } from "../model/task";
+import { TaskLevel } from "../model/taskLevel";
 import { SchemaUser } from "../model/schema-user";
 import { SchemaPost } from "../model/schema-post";
 import { pgHourMinute } from "../types/hour-minute";
 import { pgIntDatetime } from "../types/int-datetime";
+import { OrderTask } from "../model/orderTask";
 
 // Define PostgreSQL ENUM types
 const orderStatusEnum = pgEnum('order_status', ['pending', 'processing', 'completed', 'cancelled', 'refunded'] as const);
@@ -31,8 +33,16 @@ export class AppDatabase extends DbContext {
         return this.table(Order);
     }
 
+    get orderTasks(): DbEntityTable<OrderTask> {
+        return this.table(OrderTask);
+    }
+
     get tasks(): DbEntityTable<Task> {
         return this.table(Task);
+    }
+
+    get taskLevels(): DbEntityTable<TaskLevel> {
+        return this.table(TaskLevel);
     }
 
     get schemaUsers(): DbEntityTable<SchemaUser> {
@@ -109,11 +119,44 @@ export class AppDatabase extends DbContext {
                 .onDelete('cascade')
                 .isRequired();
 
+            entity.hasMany(e => e.orderTasks, () => OrderTask)
+                .withForeignKey(e => e.orderId)
+                .withPrincipalKey(e => e.id);
+
             // Add composite index for efficient filtering by user and status
             entity.hasIndex('IX_Orders_UserId_Status', e => [e.userId, e.status]);
 
             // Add index on createdAt for date-based queries
             entity.hasIndex('IX_Orders_CreatedAt', e => [e.createdAt]);
+        });
+
+        model.entity(OrderTask, (entity) => {
+            entity.toTable('order_task');
+
+            entity.property(e => e.orderId).hasType(integer('order_id')).isPrimaryKey();
+            entity.property(e => e.taskId).hasType(integer('task_id')).isPrimaryKey();
+            entity.property(e => e.sortOrder).hasType(integer('sort_order'));
+
+            entity.hasOne(e => e.order, () => Order)
+                .withForeignKey(e => e.orderId)
+                .withPrincipalKey(e => e.id);
+
+            entity.hasOne(e => e.task, () => Task)
+                .withForeignKey(e => e.taskId)
+                .withPrincipalKey(e => e.id);
+        });
+
+        // Configure TaskLevel entity
+        model.entity(TaskLevel, entity => {
+            entity.toTable('task_levels');
+
+            entity.property(e => e.id).hasType(integer('id').primaryKey().generatedAlwaysAsIdentity({ name: 'task_levels_id_seq' }));
+            entity.property(e => e.name).hasType(varchar('name', 100)).isRequired();
+            entity.property(e => e.createdById).hasType(integer('created_by_id')).isRequired();
+
+            entity.hasOne(e => e.createdBy, () => User)
+                .withForeignKey(e => e.createdById)
+                .withPrincipalKey(u => u.id);
         });
 
         // Configure Task entity
@@ -124,6 +167,11 @@ export class AppDatabase extends DbContext {
             entity.property(e => e.title).hasType(varchar('title', 200)).isRequired();
             entity.property(e => e.status).hasType(enumColumn('status', taskStatusEnum)).isRequired();
             entity.property(e => e.priority).hasType(enumColumn('priority', taskPriorityEnum)).isRequired();
+            entity.property(e => e.levelId).hasType(integer('level_id'));
+
+            entity.hasOne(e => e.level, () => TaskLevel)
+                .withForeignKey(e => sql`${e.levelId}`)
+                .withPrincipalKey(l => l.id);
         });
 
         // Configure SchemaUser entity (in auth schema)

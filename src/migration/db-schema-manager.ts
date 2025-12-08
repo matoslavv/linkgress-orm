@@ -361,6 +361,86 @@ export class DbSchemaManager {
   }
 
   /**
+   * Sort tables in dependency order (topological sort)
+   * Tables with no foreign key dependencies come first
+   */
+  private sortTablesByDependency(): Array<[string, TableSchema]> {
+    const tables = Array.from(this.schemaRegistry.entries());
+    const tableNames = new Set(tables.map(([name]) => name));
+
+    // Build dependency graph: tableName -> set of tables it depends on
+    const dependencies = new Map<string, Set<string>>();
+
+    for (const [tableName, tableSchema] of tables) {
+      const deps = new Set<string>();
+
+      // Check foreign keys defined in foreignKeys array
+      const foreignKeys = tableSchema.foreignKeys || [];
+      for (const fk of foreignKeys) {
+        if (tableNames.has(fk.referencedTable) && fk.referencedTable !== tableName) {
+          deps.add(fk.referencedTable);
+        }
+      }
+
+      // Check column references (backward compatibility)
+      for (const [_, colBuilder] of Object.entries(tableSchema.columns)) {
+        const config = (colBuilder as any).build();
+        if (config.references && tableNames.has(config.references.table) && config.references.table !== tableName) {
+          deps.add(config.references.table);
+        }
+      }
+
+      dependencies.set(tableName, deps);
+    }
+
+    // Topological sort using Kahn's algorithm
+    // in-degree = number of dependencies a table has (tables it references)
+    const sorted: Array<[string, TableSchema]> = [];
+    const remaining = new Map<string, Set<string>>();
+
+    // Copy dependencies
+    for (const [tableName, deps] of dependencies) {
+      remaining.set(tableName, new Set(deps));
+    }
+
+    // Find all tables with no dependencies
+    const queue: string[] = [];
+    for (const [tableName, deps] of remaining) {
+      if (deps.size === 0) {
+        queue.push(tableName);
+      }
+    }
+
+    // Process tables in order
+    while (queue.length > 0) {
+      const tableName = queue.shift()!;
+      const tableSchema = this.schemaRegistry.get(tableName)!;
+      sorted.push([tableName, tableSchema]);
+
+      // Remove this table from other tables' dependencies
+      for (const [depTableName, deps] of remaining) {
+        if (deps.has(tableName)) {
+          deps.delete(tableName);
+          if (deps.size === 0 && !sorted.some(([name]) => name === depTableName)) {
+            queue.push(depTableName);
+          }
+        }
+      }
+    }
+
+    // If we didn't process all tables, there's a circular dependency
+    // Fall back to original order and let the database handle it
+    if (sorted.length !== tables.length) {
+      if (this.logQueries) {
+        console.log('Warning: Circular dependency detected in table foreign keys, using original order\n');
+      }
+      return tables;
+    }
+
+    return sorted;
+  }
+
+  /**
    * Create all tables in the database
    */
   async ensureCreated(): Promise<void> {
@@ -377,8 +457,9 @@ export class DbSchemaManager {
     // Create sequences
     await this.createSequences();
 
-    // Create tables
-    for (const [tableName, tableSchema] of this.schemaRegistry.entries()) {
+    // Create tables in dependency order
+    const sortedTables = this.sortTablesByDependency();
+    for (const [tableName, tableSchema] of sortedTables) {
       await this.createTable(tableName, tableSchema);
     }
 

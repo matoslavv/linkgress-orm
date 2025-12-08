@@ -7,7 +7,7 @@ import { Subquery } from './subquery';
 import { GroupedQueryBuilder } from './grouped-query';
 import { DbCte, isCte } from './cte-builder';
 import { CollectionStrategyFactory } from './collection-strategy.factory';
-import type { CollectionAggregationConfig, SelectedField } from './collection-strategy.interface';
+import type { CollectionAggregationConfig, SelectedField, NavigationJoin } from './collection-strategy.interface';
 
 /**
  * Performance utility: Get column name map from schema, using cached version if available
@@ -169,11 +169,12 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
   private manualJoins: ManualJoinDefinition[] = [];
   private joinCounter: number = 0;
   private collectionStrategy?: CollectionStrategyType;
+  private schemaRegistry?: Map<string, TableSchema>;
 
   // Performance: Cache the mock row to avoid recreating it
   private _cachedMockRow?: any;
 
-  constructor(schema: TSchema, client: DatabaseClient, whereCond?: Condition, limit?: number, offset?: number, orderBy?: Array<{ field: string; direction: 'ASC' | 'DESC' }>, executor?: QueryExecutor, manualJoins?: ManualJoinDefinition[], joinCounter?: number, collectionStrategy?: CollectionStrategyType) {
+  constructor(schema: TSchema, client: DatabaseClient, whereCond?: Condition, limit?: number, offset?: number, orderBy?: Array<{ field: string; direction: 'ASC' | 'DESC' }>, executor?: QueryExecutor, manualJoins?: ManualJoinDefinition[], joinCounter?: number, collectionStrategy?: CollectionStrategyType, schemaRegistry?: Map<string, TableSchema>) {
     this.schema = schema;
     this.client = client;
     this.whereCond = whereCond;
@@ -184,6 +185,7 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
     this.manualJoins = manualJoins || [];
     this.joinCounter = joinCounter || 0;
     this.collectionStrategy = collectionStrategy;
+    this.schemaRegistry = schemaRegistry;
   }
 
   /**
@@ -210,7 +212,7 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
       this.manualJoins,
       this.joinCounter,
       false,  // isDistinct defaults to false
-      undefined,  // schemaRegistry
+      this.schemaRegistry,  // Pass schema registry for nested navigation resolution
       [],  // ctes - start with empty array
       this.collectionStrategy
     );
@@ -247,7 +249,7 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
       this.manualJoins,
       this.joinCounter,
       false,
-      undefined,
+      this.schemaRegistry,  // Pass schema registry for nested navigation resolution
       ctes,
       this.collectionStrategy
     );
@@ -285,8 +287,11 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
 
     // Add relations (both collections and single references)
     for (const [relName, relConfig] of relationEntries) {
-      // Performance: Use cached target schema
-      const targetSchema = getTargetSchemaForRelation(this.schema, relName, relConfig);
+      // Performance: Use cached target schema, but prefer registry lookup for full relations
+      let targetSchema = this.schemaRegistry?.get(relConfig.targetTable);
+      if (!targetSchema) {
+        targetSchema = getTargetSchemaForRelation(this.schema, relName, relConfig);
+      }
 
       if (relConfig.type === 'many') {
         Object.defineProperty(mock, relName, {
@@ -296,7 +301,8 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
               relConfig.targetTable,
               relConfig.foreignKey || relConfig.foreignKeys?.[0] || '',
               this.schema.name,
-              targetSchema
+              targetSchema,
+              this.schemaRegistry  // Pass schema registry for nested navigation resolution
             );
           },
           enumerable: true,
@@ -312,7 +318,8 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
               relConfig.foreignKeys || [relConfig.foreignKey || ''],
               relConfig.matches || [],
               relConfig.isMandatory ?? false,
-              targetSchema
+              targetSchema,
+              this.schemaRegistry  // Pass schema registry for nested navigation resolution
             );
             return refBuilder.createMockTargetRow();
           },
@@ -2054,33 +2061,133 @@ export class SelectQueryBuilder<TSelection> {
 
   /**
    * Detect navigation property references in selection and add necessary JOINs
+   * Supports multi-level navigation like task.level.createdBy
    */
-  private detectAndAddJoinsFromSelection(selection: any, joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean }>): void {
+  private detectAndAddJoinsFromSelection(selection: any, joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean; sourceAlias?: string }>): void {
     if (!selection || typeof selection !== 'object') {
       return;
     }
 
-    for (const [key, value] of Object.entries(selection)) {
+    // First pass: collect all table aliases
+    const allTableAliases = new Set<string>();
+    this.collectTableAliasesFromSelection(selection, allTableAliases);
+
+    // Second pass: resolve all joins through the schema graph
+    this.resolveJoinsForTableAliases(allTableAliases, joins);
+  }
+
+  /**
+   * Collect all table aliases from a selection
+   */
+  private collectTableAliasesFromSelection(selection: any, allTableAliases: Set<string>): void {
+    if (!selection || typeof selection !== 'object') {
+      return;
+    }
+
+    for (const [_key, value] of Object.entries(selection)) {
       if (value && typeof value === 'object' && '__tableAlias' in value && '__dbColumnName' in value) {
-        // This is a FieldRef with a table alias - check if it's from a related table
-        this.addJoinForFieldRef(value, joins);
+        // This is a FieldRef with a table alias
+        const tableAlias = value.__tableAlias as string;
+        if (tableAlias && tableAlias !== this.schema.name) {
+          allTableAliases.add(tableAlias);
+        }
       } else if (value instanceof SqlFragment) {
-        // SqlFragment may contain navigation property references - extract them
+        // SqlFragment may contain navigation property references
         const fieldRefs = value.getFieldRefs();
         for (const fieldRef of fieldRefs) {
-          this.addJoinForFieldRef(fieldRef, joins);
+          if ('__tableAlias' in fieldRef && fieldRef.__tableAlias) {
+            const tableAlias = fieldRef.__tableAlias as string;
+            if (tableAlias && tableAlias !== this.schema.name) {
+              allTableAliases.add(tableAlias);
+            }
+          }
         }
-      } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+      } else if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof CollectionQueryBuilder)) {
         // Recursively check nested objects
-        this.detectAndAddJoinsFromSelection(value, joins);
+        this.collectTableAliasesFromSelection(value, allTableAliases);
+      }
+    }
+  }
+
+  /**
+   * Resolve all navigation joins by finding the correct path through the schema graph
+   * This handles multi-level navigation like task.level.createdBy
+   */
+  private resolveJoinsForTableAliases(
+    allTableAliases: Set<string>,
+    joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean; sourceAlias?: string }>
+  ): void {
+    if (allTableAliases.size === 0) {
+      return;
+    }
+
+    // Keep resolving until we've resolved all aliases or can't make progress
+    const resolved = new Set<string>();
+    let maxIterations = allTableAliases.size * 3; // Prevent infinite loops
+
+    while (resolved.size < allTableAliases.size && maxIterations-- > 0) {
+      // Build a map of already joined schemas for path resolution
+      const joinedSchemas = new Map<string, TableSchema>();
+      joinedSchemas.set(this.schema.name, this.schema);
+
+      for (const join of joins) {
+        let schema: TableSchema | undefined;
+        if (this.schemaRegistry) {
+          schema = this.schemaRegistry.get(join.targetTable);
+        }
+        if (schema) {
+          joinedSchemas.set(join.alias, schema);
+        }
+      }
+
+      // Try to resolve each unresolved alias
+      for (const alias of allTableAliases) {
+        if (resolved.has(alias) || joins.some(j => j.alias === alias)) {
+          resolved.add(alias);
+          continue;
+        }
+
+        // Look for this alias in any of the already joined schemas
+        for (const [sourceAlias, schema] of joinedSchemas) {
+          if (schema.relations && schema.relations[alias]) {
+            const relation = schema.relations[alias];
+            if (relation.type === 'one') {
+              // Get target schema
+              let targetSchema: TableSchema | undefined;
+              let targetSchemaName: string | undefined;
+
+              if (this.schemaRegistry) {
+                targetSchema = this.schemaRegistry.get(relation.targetTable);
+                targetSchemaName = targetSchema?.schema;
+              }
+              if (!targetSchema && relation.targetTableBuilder) {
+                targetSchema = relation.targetTableBuilder.build();
+                targetSchemaName = targetSchema?.schema;
+              }
+
+              joins.push({
+                alias,
+                targetTable: relation.targetTable,
+                targetSchema: targetSchemaName,
+                foreignKeys: relation.foreignKeys || [relation.foreignKey || ''],
+                matches: relation.matches || ['id'],
+                isMandatory: relation.isMandatory ?? false,
+                sourceAlias,  // Track where this join comes from
+              });
+              resolved.add(alias);
+              break;
+            }
+          }
+        }
       }
     }
   }
 
   /**
    * Add a JOIN for a FieldRef if it references a related table
+   * @deprecated Use detectAndAddJoinsFromSelection with multi-level resolution instead
    */
-  private addJoinForFieldRef(fieldRef: any, joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean }>): void {
+  private addJoinForFieldRef(fieldRef: any, joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean; sourceAlias?: string }>): void {
     if (!fieldRef || typeof fieldRef !== 'object' || !('__tableAlias' in fieldRef) || !('__dbColumnName' in fieldRef)) {
       return;
     }
@@ -2113,42 +2220,26 @@ export class SelectQueryBuilder<TSelection> {
   /**
    * Detect navigation property references in a WHERE condition and add necessary JOINs
    */
-  private detectAndAddJoinsFromCondition(condition: Condition | undefined, joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean }>): void {
+  private detectAndAddJoinsFromCondition(condition: Condition | undefined, joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean; sourceAlias?: string }>): void {
     if (!condition) {
       return;
     }
 
-    // Get all field references from the condition
+    // Collect all table aliases from the condition
+    const allTableAliases = new Set<string>();
     const fieldRefs = condition.getFieldRefs();
 
     for (const fieldRef of fieldRefs) {
       if ('__tableAlias' in fieldRef && fieldRef.__tableAlias) {
         const tableAlias = fieldRef.__tableAlias as string;
-        // Check if this references a related table that isn't already joined
-        if (tableAlias !== this.schema.name && !joins.some(j => j.alias === tableAlias)) {
-          // Find the relation config for this navigation
-          const relation = this.schema.relations[tableAlias];
-          if (relation && relation.type === 'one') {
-            // Get target schema from targetTableBuilder if available
-            let targetSchema: string | undefined;
-            if (relation.targetTableBuilder) {
-              const targetTableSchema = relation.targetTableBuilder.build();
-              targetSchema = targetTableSchema.schema;
-            }
-
-            // Add a JOIN for this reference
-            joins.push({
-              alias: tableAlias,
-              targetTable: relation.targetTable,
-              targetSchema,
-              foreignKeys: relation.foreignKeys || [relation.foreignKey || ''],
-              matches: relation.matches || [],
-              isMandatory: relation.isMandatory ?? false,
-            });
-          }
+        if (tableAlias !== this.schema.name) {
+          allTableAliases.add(tableAlias);
         }
       }
     }
+
+    // Resolve all joins through the schema graph
+    this.resolveJoinsForTableAliases(allTableAliases, joins);
   }
 
   /**
@@ -2163,7 +2254,7 @@ export class SelectQueryBuilder<TSelection> {
 
     const selectParts: string[] = [];
     const collectionFields: Array<{ name: string; cteName: string; isCTE: boolean; joinClause?: string; selectExpression?: string }> = [];
-    const joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean }> = [];
+    const joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean; sourceAlias?: string }> = [];
 
     // Scan selection for navigation property references and add JOINs
     this.detectAndAddJoinsFromSelection(selection, joins);
@@ -2531,11 +2622,14 @@ export class SelectQueryBuilder<TSelection> {
     for (const join of joins) {
       const joinType = join.isMandatory ? 'INNER JOIN' : 'LEFT JOIN';
       // Build ON clause for the join
+      // For multi-level navigation, use the sourceAlias (the intermediate table)
+      // For direct navigation, use the main table name
+      const sourceTable = join.sourceAlias || this.schema.name;
       const onConditions: string[] = [];
       for (let i = 0; i < join.foreignKeys.length; i++) {
         const fk = join.foreignKeys[i];
         const match = join.matches[i];
-        onConditions.push(`"${this.schema.name}"."${fk}" = "${join.alias}"."${match}"`);
+        onConditions.push(`"${sourceTable}"."${fk}" = "${join.alias}"."${match}"`);
       }
       // Use schema-qualified table name if schema is specified
       const joinTableName = this.getQualifiedTableName(join.targetTable, join.targetSchema);
@@ -3298,7 +3392,8 @@ export class CollectionQueryBuilder<TItem = any> {
       this.targetTable,
       this.foreignKey,
       this.sourceTable,
-      this.targetTableSchema
+      this.targetTableSchema,
+      this.schemaRegistry  // Pass schema registry for nested navigation resolution
     );
     newBuilder.selector = selector as any;
     newBuilder.whereCond = this.whereCond;
@@ -3575,6 +3670,193 @@ export class CollectionQueryBuilder<TItem = any> {
   }
 
   /**
+   * Detect navigation property references in the selected fields and add necessary JOINs
+   * This supports multi-level navigation like p.task.level.createdBy.username
+   */
+  private detectNavigationJoins(
+    selection: any,
+    joins: NavigationJoin[],
+    currentSourceAlias: string,
+    currentSchema: TableSchema
+  ): void {
+    if (!selection || typeof selection !== 'object') {
+      return;
+    }
+
+    // Collect all table aliases referenced in the selection
+    const allTableAliases = new Set<string>();
+
+    // Helper to collect from a single selection
+    const collectFromSelection = (sel: any): void => {
+      if (!sel || typeof sel !== 'object') {
+        return;
+      }
+
+      // Handle single FieldRef
+      if ('__tableAlias' in sel && '__dbColumnName' in sel) {
+        this.addNavigationJoinForFieldRef(sel, joins, currentSourceAlias, currentSchema, allTableAliases);
+        return;
+      }
+
+      // Handle object with multiple fields
+      for (const [_key, value] of Object.entries(sel)) {
+        if (value && typeof value === 'object' && '__tableAlias' in value && '__dbColumnName' in value) {
+          // This is a FieldRef with a table alias
+          this.addNavigationJoinForFieldRef(value, joins, currentSourceAlias, currentSchema, allTableAliases);
+        } else if (value instanceof SqlFragment) {
+          // SqlFragment may contain navigation property references
+          const fieldRefs = value.getFieldRefs();
+          for (const fieldRef of fieldRefs) {
+            this.addNavigationJoinForFieldRef(fieldRef, joins, currentSourceAlias, currentSchema, allTableAliases);
+          }
+        } else if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof CollectionQueryBuilder)) {
+          // Recursively check nested objects
+          collectFromSelection(value);
+        }
+      }
+    };
+
+    // First pass: collect all table aliases
+    collectFromSelection(selection);
+
+    // Second pass: resolve all navigation joins by finding the correct path through schemas
+    if (allTableAliases.size > 0) {
+      this.resolveNavigationJoins(allTableAliases, joins, currentSchema);
+    }
+  }
+
+  /**
+   * Add a navigation JOIN for a FieldRef if it references a related table
+   * Handles multi-level navigation by recursively resolving the join chain
+   */
+  private addNavigationJoinForFieldRef(
+    fieldRef: any,
+    joins: NavigationJoin[],
+    sourceAlias: string,
+    sourceSchema: TableSchema,
+    allTableAliases: Set<string>
+  ): void {
+    if (!fieldRef || typeof fieldRef !== 'object' || !('__tableAlias' in fieldRef)) {
+      return;
+    }
+
+    const tableAlias = fieldRef.__tableAlias as string;
+
+    // If this references the target table directly, no join needed
+    if (!tableAlias || tableAlias === this.targetTable) {
+      return;
+    }
+
+    // Collect this table alias for later resolution
+    allTableAliases.add(tableAlias);
+
+    // Check if we already have this join
+    if (joins.some(j => j.alias === tableAlias)) {
+      return;
+    }
+
+    // Find the relation in the current schema
+    const relation = sourceSchema.relations?.[tableAlias];
+    if (relation && relation.type === 'one') {
+      this.addNavigationJoin(tableAlias, relation, joins, sourceAlias);
+    }
+  }
+
+  /**
+   * Add a navigation join and return the target schema
+   */
+  private addNavigationJoin(
+    alias: string,
+    relation: any,
+    joins: NavigationJoin[],
+    sourceAlias: string
+  ): TableSchema | undefined {
+    // Check if already added
+    if (joins.some(j => j.alias === alias)) {
+      return undefined;
+    }
+
+    // Get the target table schema
+    let targetSchema: TableSchema | undefined;
+    let targetSchemaName: string | undefined;
+
+    if (this.schemaRegistry) {
+      targetSchema = this.schemaRegistry.get(relation.targetTable);
+      targetSchemaName = targetSchema?.schema;
+    }
+    if (!targetSchema && relation.targetTableBuilder) {
+      targetSchema = relation.targetTableBuilder.build();
+      targetSchemaName = targetSchema?.schema;
+    }
+
+    // Build the join info
+    const foreignKeys = relation.foreignKeys || [relation.foreignKey || ''];
+    const matches = relation.matches || ['id'];  // Default to 'id' as the PK
+
+    joins.push({
+      alias,
+      targetTable: relation.targetTable,
+      targetSchema: targetSchemaName,
+      foreignKeys,
+      matches,
+      isMandatory: relation.isMandatory ?? false,
+      sourceAlias,
+    });
+
+    return targetSchema;
+  }
+
+  /**
+   * Resolve all navigation joins by finding the correct path through the schema graph
+   * This handles multi-level navigation like task.level.createdBy
+   */
+  private resolveNavigationJoins(
+    allTableAliases: Set<string>,
+    joins: NavigationJoin[],
+    startSchema: TableSchema
+  ): void {
+    // Keep resolving until we've resolved all aliases or can't make progress
+    let resolved = new Set<string>();
+    let maxIterations = allTableAliases.size * 2; // Prevent infinite loops
+
+    while (resolved.size < allTableAliases.size && maxIterations-- > 0) {
+      // Build a map of already joined schemas for path resolution
+      const joinedSchemas = new Map<string, TableSchema>();
+      joinedSchemas.set(this.targetTable, startSchema);
+
+      for (const join of joins) {
+        let schema: TableSchema | undefined;
+        if (this.schemaRegistry) {
+          schema = this.schemaRegistry.get(join.targetTable);
+        }
+        if (schema) {
+          joinedSchemas.set(join.alias, schema);
+        }
+      }
+
+      // Try to resolve each unresolved alias
+      for (const alias of allTableAliases) {
+        if (resolved.has(alias) || joins.some(j => j.alias === alias)) {
+          resolved.add(alias);
+          continue;
+        }
+
+        // Look for this alias in any of the already joined schemas
+        for (const [schemaAlias, schema] of joinedSchemas) {
+          if (schema.relations && schema.relations[alias]) {
+            const relation = schema.relations[alias];
+            if (relation.type === 'one') {
+              this.addNavigationJoin(alias, relation, joins, schemaAlias);
+              resolved.add(alias);
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /**
    * Build CTE for this collection query
    * Now delegates to collection strategy pattern
    * Returns full CollectionAggregationResult for strategies that need special handling (like LATERAL)
@@ -3610,8 +3892,13 @@ export class CollectionQueryBuilder<TItem = any> {
         context.paramCounter = sqlBuildContext.paramCounter;
         return { alias, expression: fragmentSql };
       } else if (typeof field === 'object' && field !== null && '__dbColumnName' in field) {
-        // FieldRef object - use database column name
+        // FieldRef object - use database column name with optional table alias
         const dbColumnName = (field as any).__dbColumnName;
+        const tableAlias = (field as any).__tableAlias;
+        // If tableAlias differs from the target table, it's a navigation property reference
+        if (tableAlias && tableAlias !== this.targetTable) {
+          return { alias, expression: `"${tableAlias}"."${dbColumnName}"` };
+        }
         return { alias, expression: `"${dbColumnName}"` };
       } else if (typeof field === 'string') {
         // Simple string reference (for backward compatibility)
@@ -3737,7 +4024,15 @@ export class CollectionQueryBuilder<TItem = any> {
       defaultValue = "'[]'::jsonb";
     }
 
-    // Step 5: Build CollectionAggregationConfig object
+    // Step 5: Detect navigation joins from the selected fields
+    const navigationJoins: NavigationJoin[] = [];
+    if (this.selector && this.targetTableSchema) {
+      const mockItem = this.createMockItem();
+      const selectedFields = this.selector(mockItem);
+      this.detectNavigationJoins(selectedFields, navigationJoins, this.targetTable, this.targetTableSchema);
+    }
+
+    // Step 6: Build CollectionAggregationConfig object
     const config: CollectionAggregationConfig = {
       relationName: this.relationName,
       targetTable: this.targetTable,
@@ -3756,6 +4051,7 @@ export class CollectionQueryBuilder<TItem = any> {
       arrayField,
       defaultValue,
       counter: context.cteCounter++,
+      navigationJoins: navigationJoins.length > 0 ? navigationJoins : undefined,
     };
 
     // Step 6: Call the strategy

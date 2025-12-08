@@ -62,7 +62,9 @@ async function main() {
       age: 30,
       isActive: true,
       metadata: { role: 'admin' },
-    });
+    }).returning(p => ({
+      id: p.id
+    }))
     console.log('   ✓ User created\n');
 
     const user2 = await db.users.insert({
@@ -70,7 +72,9 @@ async function main() {
       email: 'jane@example.com',
       age: 28,
       isActive: true,
-    });
+    }).returning(p => ({
+      id: p.id
+    }));
     console.log('   ✓ User created\n');
 
     console.log('3. Inserting posts...');
@@ -80,7 +84,9 @@ async function main() {
       userId: user1.id,
       views: 100,
       publishTime: { hour: 9, minute: 30 }, // HourMinute custom type - stored as 570 (minutes) in DB
-    });
+    }).returning(p => ({
+      id: p.id
+    }));
 
     await db.posts.insert({
       title: 'Advanced Patterns',
@@ -88,7 +94,9 @@ async function main() {
       userId: user1.id,
       views: 50,
       publishTime: { hour: 14, minute: 15 }, // Stored as 855 in DB
-    });
+    }).returning(p => ({
+      id: p.id
+    }))
 
     await db.posts.insert({
       title: 'TypeScript Tips',
@@ -96,8 +104,130 @@ async function main() {
       userId: user2.id,
       views: 75,
       publishTime: { hour: 16, minute: 45 }, // Stored as 1005 in DB
-    });
+    }).returning(p => ({
+      id: p.id
+    }));
     console.log('   ✓ Posts created\n');
+
+    // Test multi-level navigation: order -> orderTask -> task -> level -> createdBy
+    console.log('\n=== Testing Multi-Level Navigation ===');
+
+    // Create test data for multi-level navigation
+    const taskLevel = await db.taskLevels.insert({
+      name: 'High Priority',
+      createdById: user1.id
+    }).returning();
+    console.log('   ✓ Task level created:', taskLevel);
+
+    const task1 = await db.tasks.insert({
+      title: 'Important Task',
+      status: 'pending',
+      priority: 'high',
+      levelId: taskLevel.id
+    }).returning();
+    console.log('   ✓ Task created:', task1);
+
+    const order1 = await db.orders.insert({
+      userId: user1.id,
+      totalAmount: 100.00,
+      status: 'pending'
+    }).returning();
+    console.log('   ✓ Order created:', order1);
+
+    await db.orderTasks.insert({
+      orderId: order1.id,
+      taskId: task1.id,
+      sortOrder: 1
+    });
+    console.log('   ✓ OrderTask created');
+
+    // Test 1: Multi-level navigation in collection query (4 levels: order -> orderTask -> task -> level -> createdBy)
+    try {
+      console.log('\n   Test 1: Multi-level navigation in collection (order.orderTasks.task.level.createdBy)...');
+      const collectionResult = await db.orders.where(p => gt(p.id, 0)).select(p => ({
+        id: p.id,
+        created: p.createdAt,
+        taskIds: p.orderTasks?.select(pt => ({
+          taskId: pt.task!.id,
+          taskTitle: pt.task!.title,
+          levelName: pt.task!.level!.name,
+          creatorEmail: pt.task!.level!.createdBy!.email
+        })).toList('tasks')
+      })).toList();
+
+      console.log('   ✓ Test 1 PASSED:', JSON.stringify(collectionResult, null, 2));
+    } catch (error) {
+      console.error('   ✗ Test 1 FAILED:', error);
+    }
+
+    // Test 2: Direct multi-level navigation query (orderTask -> task -> level -> createdBy)
+    try {
+      console.log('\n   Test 2: Direct multi-level navigation (orderTask.task.level.createdBy)...');
+      const directResult = await db.orderTasks.where(p => gt(p.orderId, 0)).select(p => ({
+        orderId: p.orderId,
+        taskId: p.taskId,
+        taskTitle: p.task!.title,
+        levelName: p.task!.level!.name,
+        creatorEmail: p.task!.level!.createdBy!.email,
+        creatorUsername: p.task!.level!.createdBy!.username
+      })).toList();
+
+      console.log('   ✓ Test 2 PASSED:', JSON.stringify(directResult, null, 2));
+    } catch (error) {
+      console.error('   ✗ Test 2 FAILED:', error);
+    }
+
+    // Test 3: Two-level navigation (task -> level)
+    try {
+      console.log('\n   Test 3: Two-level navigation (task.level)...');
+      const twoLevelResult = await db.tasks.where(p => gt(p.id, 0)).select(p => ({
+        id: p.id,
+        title: p.title,
+        levelName: p.level!.name,
+        levelCreatorId: p.level!.createdById
+      })).toList();
+
+      console.log('   ✓ Test 3 PASSED:', JSON.stringify(twoLevelResult, null, 2));
+    } catch (error) {
+      console.error('   ✗ Test 3 FAILED:', error);
+    }
+
+    // Test 4: Three-level navigation (task -> level -> createdBy)
+    try {
+      console.log('\n   Test 4: Three-level navigation (task.level.createdBy)...');
+      const threeLevelResult = await db.tasks.where(p => gt(p.id, 0)).select(p => ({
+        id: p.id,
+        title: p.title,
+        levelName: p.level!.name,
+        creatorEmail: p.level!.createdBy!.email,
+        creatorUsername: p.level!.createdBy!.username
+      })).toList();
+
+      console.log('   ✓ Test 4 PASSED:', JSON.stringify(threeLevelResult, null, 2));
+    } catch (error) {
+      console.error('   ✗ Test 4 FAILED:', error);
+    }
+
+    // Test 5: Collection with two-level navigation
+    try {
+      console.log('\n   Test 5: Collection with two-level navigation (user.posts with post.user)...');
+      const collectionTwoLevel = await db.users.where(u => gt(u.id, 0)).select(u => ({
+        id: u.id,
+        username: u.username,
+        orderInfo: u.orders?.select(o => ({
+          orderId: o.id,
+          orderStatus: o.status,
+          userName: o.user!.username  // Navigate back to user through order
+        })).toList('orders')
+      })).toList();
+
+      console.log('   ✓ Test 5 PASSED:', JSON.stringify(collectionTwoLevel, null, 2));
+    } catch (error) {
+      console.error('   ✗ Test 5 FAILED:', error);
+    }
+
+    console.log('\n=== End Multi-Level Navigation Tests ===\n');
+
 
     console.log('4. Query with WHERE - NO MORE as any needed!:');
     const activeUsers = await db.users
@@ -168,7 +298,11 @@ async function main() {
         isActive: true,
         // age is optional, can be omitted
       },
-    ]);
+    ]).returning(p => ({
+      id: p.id,
+      username: p.username
+    }));
+
     console.log(`   ✓ Bulk inserted ${newUsers.length} users`);
     console.log('   Users:', newUsers.map(u => ({ id: u.id, username: u.username })));
     console.log('');
@@ -258,7 +392,13 @@ async function main() {
 
       // chunkSize: 500, // Optional: override auto-detected chunk size for large batches
       // overridingSystemValue: true, // Optional: auto-detected if PK is in data
-    });
+    }).returning(p => ({
+      id: p.id,
+      username: p.username,
+      email: p.email,
+      age: p.age
+    }));
+
     console.log(`   ✓ Advanced upsert returned ${advancedUpsertResult.length} rows`);
     console.log('   Users:', advancedUpsertResult.map(u => ({ id: u.id, username: u.username, email: u.email, age: u.age })));
     console.log('');
@@ -801,10 +941,10 @@ async function main() {
 
 
 
- // Create posts for users
-    const alice = await db.users.insert({ username: 'alice', email: 'alice@test.com', age: 25, isActive: true });
-    const bob = await db.users.insert({ username: 'bob', email: 'bob@test.com', age: 35, isActive: true });
-    const charlie = await db.users.insert({ username: 'charlie', email: 'charlie@test.com', age: 45, isActive: false });
+    // Create posts for users
+    const alice = await db.users.insert({ username: 'alice', email: 'alice@test.com', age: 25, isActive: true }).returning();
+    const bob = await db.users.insert({ username: 'bob', email: 'bob@test.com', age: 35, isActive: true }).returning();
+    const charlie = await db.users.insert({ username: 'charlie', email: 'charlie@test.com', age: 45, isActive: false }).returning();
 
 
     await db.posts.insert({ title: 'Alice Post 1', content: 'Content 1', userId: alice.id, views: 100 });
@@ -919,16 +1059,16 @@ async function main() {
       .asSubquery('table');
 
 
-      const usersTest = await db.users.innerJoin(
-        groupedSubquery,
-        (user, sq) => eq(user.id, sq.userId),
-        (user, sq) => ({
-          id: user.id,
-          kokos: sq.totalViews
-        }), 'table'
-      ).toList();
+    const usersTest = await db.users.innerJoin(
+      groupedSubquery,
+      (user, sq) => eq(user.id, sq.userId),
+      (user, sq) => ({
+        id: user.id,
+        kokos: sq.totalViews
+      }), 'table'
+    ).toList();
 
-      const z = usersTest;
+    const z = usersTest;
 
     // This demonstrates that grouped queries can be used as subqueries
     console.log('Created grouped subquery (can be used in joins, WHERE clauses, etc.)');

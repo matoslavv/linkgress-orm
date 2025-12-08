@@ -71,6 +71,46 @@ export interface CollectionAggregationResult {
 }
 
 /**
+ * Navigation join information for multi-level navigation in collections
+ */
+export interface NavigationJoin {
+  /**
+   * Alias for the joined table (usually the relation name)
+   */
+  alias: string;
+
+  /**
+   * The actual table name to join
+   */
+  targetTable: string;
+
+  /**
+   * Schema name if different from public
+   */
+  targetSchema?: string;
+
+  /**
+   * Foreign key columns in the source table
+   */
+  foreignKeys: string[];
+
+  /**
+   * Primary key columns in the target table to match
+   */
+  matches: string[];
+
+  /**
+   * Whether this is an INNER JOIN (true) or LEFT JOIN (false)
+   */
+  isMandatory: boolean;
+
+  /**
+   * The source table alias for this join (the table that has the FK)
+   */
+  sourceAlias: string;
+}
+
+/**
  * Configuration for building a collection aggregation
  */
 export interface CollectionAggregationConfig {
@@ -158,6 +198,12 @@ export interface CollectionAggregationConfig {
    * Counter for naming CTEs/temp tables
    */
   counter: number;
+
+  /**
+   * Navigation joins needed for multi-level navigation in collection selectors
+   * These represent JOINs to related tables (e.g., task.level.createdBy)
+   */
+  navigationJoins?: NavigationJoin[];
 }
 
 /**

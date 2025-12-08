@@ -1,4 +1,5 @@
 import { DbEntity, DbColumn } from "../../src";
+import { OrderTask } from "./orderTask";
 import { User } from "./user";
 
 export class Order extends DbEntity {
@@ -11,4 +12,5 @@ export class Order extends DbEntity {
 
   // Navigation property
   user?: User;
+  orderTasks?: OrderTask[];
 }

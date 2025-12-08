@@ -647,7 +647,7 @@ export class TableAccessor<TBuilder extends TableBuilder<any>> {
    * Add WHERE condition before select
    */
   where(condition: (row: InferRowType<TBuilder>) => Condition): QueryBuilder<TableSchema, InferRowType<TBuilder>> {
-    const qb = new QueryBuilder<TableSchema, InferRowType<TBuilder>>(this.schema, this.client, undefined, undefined, undefined, undefined, this.executor, undefined, undefined, this.collectionStrategy);
+    const qb = new QueryBuilder<TableSchema, InferRowType<TBuilder>>(this.schema, this.client, undefined, undefined, undefined, undefined, this.executor, undefined, undefined, this.collectionStrategy, this.schemaRegistry);
     return qb.where(condition);
   }
 
@@ -655,7 +655,7 @@ export class TableAccessor<TBuilder extends TableBuilder<any>> {
    * Add CTEs (Common Table Expressions) to the query
    */
   with(...ctes: DbCte<any>[]): SelectQueryBuilder<InferRowType<TBuilder>> {
-    const qb = new QueryBuilder<TableSchema, InferRowType<TBuilder>>(this.schema, this.client, undefined, undefined, undefined, undefined, this.executor, undefined, undefined, this.collectionStrategy);
+    const qb = new QueryBuilder<TableSchema, InferRowType<TBuilder>>(this.schema, this.client, undefined, undefined, undefined, undefined, this.executor, undefined, undefined, this.collectionStrategy, this.schemaRegistry);
     return qb.with(...ctes);
   }
 
@@ -668,7 +668,7 @@ export class TableAccessor<TBuilder extends TableBuilder<any>> {
     selector: (left: InferRowType<TBuilder>, right: TRight) => TSelection,
     alias?: string
   ): SelectQueryBuilder<UnwrapSelection<TSelection>> {
-    const qb = new QueryBuilder<TableSchema, InferRowType<TBuilder>>(this.schema, this.client, undefined, undefined, undefined, undefined, this.executor, undefined, undefined, this.collectionStrategy);
+    const qb = new QueryBuilder<TableSchema, InferRowType<TBuilder>>(this.schema, this.client, undefined, undefined, undefined, undefined, this.executor, undefined, undefined, this.collectionStrategy, this.schemaRegistry);
     return qb.leftJoin(rightTable, condition, selector, alias);
   }
 
@@ -681,7 +681,7 @@ export class TableAccessor<TBuilder extends TableBuilder<any>> {
     selector: (left: InferRowType<TBuilder>, right: TRight) => TSelection,
     alias?: string
   ): SelectQueryBuilder<UnwrapSelection<TSelection>> {
-    const qb = new QueryBuilder<TableSchema, InferRowType<TBuilder>>(this.schema, this.client, undefined, undefined, undefined, undefined, this.executor, undefined, undefined, this.collectionStrategy);
+    const qb = new QueryBuilder<TableSchema, InferRowType<TBuilder>>(this.schema, this.client, undefined, undefined, undefined, undefined, this.executor, undefined, undefined, this.collectionStrategy, this.schemaRegistry);
     return qb.innerJoin(rightTable, condition, selector, alias);
   }
 

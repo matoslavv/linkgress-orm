@@ -3,6 +3,9 @@ import { AppDatabase } from '../../debug/schema/appDatabase';
 import { User } from '../../debug/model/user';
 import { Post } from '../../debug/model/post';
 import { Order } from '../../debug/model/order';
+import { Task } from '../../debug/model/task';
+import { TaskLevel } from '../../debug/model/taskLevel';
+import { OrderTask } from '../../debug/model/orderTask';
 
 /**
  * Create a test database instance
@@ -103,10 +106,51 @@ export async function seedTestData(db: AppDatabase) {
     totalAmount: 149.99,
   }).returning();
 
+  // Create task levels (need user for createdBy)
+  const highPriority = await db.taskLevels.insert({
+    name: 'High Priority',
+    createdById: alice.id,
+  }).returning();
+
+  const lowPriority = await db.taskLevels.insert({
+    name: 'Low Priority',
+    createdById: bob.id,
+  }).returning();
+
+  // Create tasks
+  const task1 = await db.tasks.insert({
+    title: 'Important Task',
+    status: 'pending',
+    priority: 'high',
+    levelId: highPriority.id,
+  }).returning();
+
+  const task2 = await db.tasks.insert({
+    title: 'Regular Task',
+    status: 'processing',
+    priority: 'medium',
+    levelId: lowPriority.id,
+  }).returning();
+
+  // Create order-task associations
+  await db.orderTasks.insert({
+    orderId: aliceOrder.id,
+    taskId: task1.id,
+    sortOrder: 1,
+  }).returning();
+
+  await db.orderTasks.insert({
+    orderId: bobOrder.id,
+    taskId: task2.id,
+    sortOrder: 1,
+  }).returning();
+
   return {
     users: { alice, bob, charlie },
     posts: { alicePost1, alicePost2, bobPost },
     orders: { aliceOrder, bobOrder },
+    taskLevels: { highPriority, lowPriority },
+    tasks: { task1, task2 },
   };
 }
 
