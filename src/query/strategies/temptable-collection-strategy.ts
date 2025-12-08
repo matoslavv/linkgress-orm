@@ -212,9 +212,14 @@ CREATE TEMP TABLE IF NOT EXISTS ${tempTableName} (
       await client.query(insertSQL, config.parentIds);
     }
 
+    // Renumber parameters in whereClause to start from $1 for this standalone query
+    // The config.whereClause may have placeholders like $5, $6 from the global context,
+    // but since we're executing as a separate query, we need $1, $2, etc.
+    const renumberedConfig = this.renumberWhereParams(config);
+
     // Build aggregation query based on type
-    const aggregationSQL = this.buildAggregationSQLByType(config, tempTableName);
-    const aggregationParams: any[] = config.whereParams || [];
+    const aggregationSQL = this.buildAggregationSQLByType(renumberedConfig, tempTableName);
+    const aggregationParams: any[] = renumberedConfig.whereParams || [];
     const selectExpression = `"${tempTableName}_agg".data`;
 
     // Execute aggregation query and store results in another temp table
@@ -242,6 +247,49 @@ ${aggregationSQL}
       selectExpression: `COALESCE(${selectExpression}, ${config.defaultValue})`,
       isCTE: false, // Not a CTE - already executed
       cleanupSql: cleanupSQL,
+    };
+  }
+
+  /**
+   * Renumber parameter placeholders in whereClause to start from $1
+   * This is needed because the whereClause is built with global param numbering,
+   * but the legacy strategy executes it as a standalone query.
+   */
+  private renumberWhereParams(config: CollectionAggregationConfig): CollectionAggregationConfig {
+    if (!config.whereClause || !config.whereParams || config.whereParams.length === 0) {
+      return config;
+    }
+
+    // Find all $N placeholders and renumber them starting from $1
+    let newWhereClause = config.whereClause;
+    const paramRegex = /\$(\d+)/g;
+    const matches = [...config.whereClause.matchAll(paramRegex)];
+
+    if (matches.length === 0) {
+      return config;
+    }
+
+    // Get the original parameter numbers in order of appearance
+    const originalNumbers = matches.map(m => parseInt(m[1], 10));
+
+    // Create a mapping from original number to new number (1-based)
+    const numberMap = new Map<number, number>();
+    let newIndex = 1;
+    for (const origNum of originalNumbers) {
+      if (!numberMap.has(origNum)) {
+        numberMap.set(origNum, newIndex++);
+      }
+    }
+
+    // Replace all placeholders with their new numbers
+    newWhereClause = config.whereClause.replace(paramRegex, (_, num) => {
+      const newNum = numberMap.get(parseInt(num, 10));
+      return `$${newNum}`;
+    });
+
+    return {
+      ...config,
+      whereClause: newWhereClause,
     };
   }
 

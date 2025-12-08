@@ -66,7 +66,16 @@ describe('CTE with Aggregation and Join', () => {
           age: user.age,
           email: user.email,
           username: user.username,
-          orders: cte.orders
+          orders: cte.orders,
+          taskOrders: user.orders!.select(o => ({
+            id: o.id,
+            tasks: o.orderTasks!.select(ot => ({
+              taskId: ot.task!.id,
+              taskTitle: ot.task!.title,
+              levelName: ot.task!.level!.name,
+              creatorEmail: ot.task!.level!.createdBy!.email,
+            })).toList('tasks')
+          }))
         }),
       ).toList();
 
@@ -149,7 +158,16 @@ describe('CTE with Aggregation and Join', () => {
           age: user.age,
           email: user.email,
           username: user.username,
-          orders: cte.orders
+          orders: cte.orders,
+          taskOrders: user.orders!.select(o => ({
+            id: o.id,
+            tasks: o.orderTasks!.select(ot => ({
+              taskId: ot.task!.id,
+              taskTitle: ot.task!.title,
+              levelName: ot.task!.level!.name,
+              creatorEmail: ot.task!.level!.createdBy!.email,
+            })).toList('tasks')
+          }))
         }),
       ).toList();
 
@@ -211,7 +229,7 @@ describe('CTE with Aggregation and Join', () => {
     });
   });
 
-  test('should handle complex CTE with temptable collection strategy', async () => {
+  test('should handle complex CTE with temptable collection strategy (without nested collections)', async () => {
     await withDatabase(async (db) => {
       await seedTestData(db);
 
@@ -269,7 +287,8 @@ describe('CTE with Aggregation and Join', () => {
         'orders',
       );
 
-      // Use temptable collection strategy
+      // Use temptable collection strategy - note: no nested collections (taskOrders removed)
+      // temptable strategy doesn't support nested collections within collection queries
       const searchProducts = await db.users
         .withQueryOptions({ collectionStrategy: 'temptable' })
         .where(p => gt(p.id, -1))
@@ -282,7 +301,126 @@ describe('CTE with Aggregation and Join', () => {
             age: user.age,
             email: user.email,
             username: user.username,
-            orders: cte.orders
+            orders: cte.orders,
+          }),
+        ).toList();
+
+      expect(searchProducts).toBeDefined();
+      expect(Array.isArray(searchProducts)).toBe(true);
+
+      // Verify that column mappers are preserved through groupBy and CTE joins
+      const userWithOrders = searchProducts.find(u => u.orders && u.orders.length > 0);
+      if (userWithOrders && userWithOrders.orders.length > 0) {
+        const order = userWithOrders.orders[0];
+        expect(order.distinctDay).toBeInstanceOf(Date);
+      }
+    });
+  });
+
+  test('should reject nested collections with temptable collection strategy', async () => {
+    await withDatabase(async (db) => {
+      await seedTestData(db);
+
+      // temptable strategy should throw an error when nested collections are used
+      await expect(async () => {
+        await db.users
+          .withQueryOptions({ collectionStrategy: 'temptable' })
+          .where(p => gt(p.id, -1))
+          .select(user => ({
+            id: user.id,
+            taskOrders: user.orders!.select(o => ({
+              id: o.id,
+              tasks: o.orderTasks!.select(ot => ({
+                taskId: ot.task!.id,
+              })).toList('tasks')
+            })).toList('taskOrders')
+          }))
+          .toList();
+      }).rejects.toThrow('Nested collections in temptable strategy are not supported');
+    });
+  });
+
+  test('should handle nested collections with lateral collection strategy', async () => {
+    await withDatabase(async (db) => {
+      await seedTestData(db);
+
+      const reproBuilder = new DbCteBuilder();
+      const groupingCte = reproBuilder.withAggregation(
+        'product_price_advance_cte',
+        db.posts
+          .where(u => gt(u.id, -1))
+          .select(u => ({
+            postId: u.id,
+            userId: u.userId,
+            username: u.content,
+            createdAt: u.customDate,
+          })),
+        p => ({ advancePriceId: p.userId }),
+        'advancePrices',
+      );
+
+      const failingCte = reproBuilder.withAggregation(
+        'order_stats',
+        db.posts.select(p => ({
+          postId: p.id,
+          userId: p.userId,
+          identifier: sql<number>`CASE WHEN ${p.user!.id} < ${10} THEN ${p.id} ELSE -1 END`.as('id'),
+          kekes: p.content,
+          distinctDay: PgIntDateTimeUtils.getLocalDay(
+            p.customDate,
+            'Europe/Bratislava',
+            'distinctDay',
+          ),
+        })).groupBy(p => ({
+          userId: p.userId,
+          identifier: p.identifier,
+          distinctDay: p.distinctDay,
+        })).select(p => ({
+          userId: p.key.userId,
+          identifier: p.key.identifier,
+          distinctDay: p.key.distinctDay,
+          minId: p.min(pr => pr.postId),
+        })).leftJoin(
+          groupingCte,
+          (secondCte, firstCte) => eq(secondCte.userId, firstCte.advancePriceId),
+          (secondCte, firstCte) => ({
+            userIdOfPost: secondCte.userId,
+            distinctDay: secondCte.distinctDay,
+            customerCategoryId: secondCte.identifier,
+            advancePrices: firstCte.advancePrices,
+          }),
+        ).orderBy(p => [
+          p.userIdOfPost,
+          p.distinctDay,
+          p.customerCategoryId,
+        ]),
+        p => ({ userIdOfPost: p.userIdOfPost }),
+        'orders',
+      );
+
+      // Use lateral collection strategy - supports nested collections
+      const searchProducts = await db.users
+        .withQueryOptions({ collectionStrategy: 'lateral' })
+        .where(p => gt(p.id, -1))
+        .with(...reproBuilder.getCtes())
+        .leftJoin(
+          failingCte,
+          (user, cte) => eq(user.id, cte.userIdOfPost),
+          (user, cte) => ({
+            id: user.id,
+            age: user.age,
+            email: user.email,
+            username: user.username,
+            orders: cte.orders,
+            taskOrders: user.orders?.select(o => ({
+              id: o.id,
+              tasks: o.orderTasks!.select(ot => ({
+                taskId: ot.task!.id,
+                taskTitle: ot.task!.title,
+                levelName: ot.task!.level!.name,
+                creatorEmail: ot.task!.level!.createdBy!.email,
+              })).toList('tasks')
+            })).toList('taskOrders')
           }),
         ).toList();
 

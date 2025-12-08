@@ -4134,6 +4134,25 @@ export class CollectionQueryBuilder<TItem = any> {
         const fragmentSql = field.buildSql(sqlBuildContext);
         context.paramCounter = sqlBuildContext.paramCounter;
         return { alias, expression: fragmentSql };
+      } else if (field instanceof CollectionQueryBuilder) {
+        // Nested collection query builder
+        // For temptable strategy, nested collections are not supported - need lateral/CTE
+        if (strategyType === 'temptable') {
+          throw new Error(
+            `Nested collections in temptable strategy are not supported. ` +
+            `The field "${alias}" contains a nested collection query. ` +
+            `Use collectionStrategy: 'lateral' or 'cte' for queries with nested collections.`
+          );
+        }
+        // For lateral/CTE strategies, build the nested collection as a subquery
+        const nestedCtx: QueryContext = {
+          ...context,
+          cteCounter: context.cteCounter,
+        };
+        const nestedResult = field.buildCTE(nestedCtx, client);
+        context.cteCounter = nestedCtx.cteCounter;
+        // The nested collection becomes a correlated subquery in SELECT
+        return { alias, expression: nestedResult.selectExpression || nestedResult.sql };
       } else if (typeof field === 'object' && field !== null && '__dbColumnName' in field) {
         // FieldRef object - use database column name with optional table alias
         const dbColumnName = (field as any).__dbColumnName;
