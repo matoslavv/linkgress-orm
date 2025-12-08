@@ -56,6 +56,20 @@ export interface ForeignKeyConstraint {
 }
 
 /**
+ * Cached column metadata for performance optimization
+ */
+export interface ColumnMetadataCache {
+  /** The database column name */
+  dbName: string;
+  /** Whether this column has a mapper */
+  hasMapper: boolean;
+  /** The mapper if present */
+  mapper?: any;
+  /** Full column config (cached to avoid repeated build() calls) */
+  config: ColumnConfig;
+}
+
+/**
  * Table schema definition
  */
 export interface TableSchema<TColumns extends Record<string, ColumnBuilder> = any> {
@@ -80,6 +94,12 @@ export interface TableSchema<TColumns extends Record<string, ColumnBuilder> = an
    * Avoids repeated targetTableBuilder.build() calls
    */
   relationSchemaCache?: Map<string, TableSchema>;
+  /**
+   * Performance optimization: Pre-computed column metadata including mappers
+   * Avoids repeated column.build() calls during result transformation
+   * Key is property name, value is cached metadata
+   */
+  columnMetadataCache?: Map<string, ColumnMetadataCache>;
 }
 
 /**
@@ -191,10 +211,18 @@ export class TableBuilder<TSchema extends SchemaDefinition = any> {
       return this._cachedSchema;
     }
 
-    // Performance: Pre-compute column name map once during build
+    // Performance: Pre-compute column name map and metadata cache once during build
     const columnNameMap = new Map<string, string>();
+    const columnMetadataCache = new Map<string, ColumnMetadataCache>();
     for (const [propName, colBuilder] of Object.entries(this.columnDefs)) {
-      columnNameMap.set(propName, (colBuilder as ColumnBuilder).build().name);
+      const config = (colBuilder as ColumnBuilder).build();
+      columnNameMap.set(propName, config.name);
+      columnMetadataCache.set(propName, {
+        dbName: config.name,
+        hasMapper: !!config.mapper,
+        mapper: config.mapper,
+        config,
+      });
     }
 
     // Performance: Pre-compute relation entries array
@@ -218,6 +246,7 @@ export class TableBuilder<TSchema extends SchemaDefinition = any> {
       columnNameMap,
       relationEntries,
       relationSchemaCache,
+      columnMetadataCache,
     };
     return this._cachedSchema;
   }

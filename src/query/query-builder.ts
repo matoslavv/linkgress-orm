@@ -2679,86 +2679,173 @@ export class SelectQueryBuilder<TSelection> {
   }
 
   /**
+   * Field type categories for optimized result transformation
+   * Pre-categorizing fields allows the per-row loop to use simple switch instead of repeated type checks
+   */
+  private static readonly FIELD_TYPE_NAVIGATION = 0;
+  private static readonly FIELD_TYPE_COLLECTION_SCALAR = 1;
+  private static readonly FIELD_TYPE_COLLECTION_ARRAY = 2;
+  private static readonly FIELD_TYPE_COLLECTION_JSON = 3;
+  private static readonly FIELD_TYPE_CTE_AGGREGATION = 4;
+  private static readonly FIELD_TYPE_SQL_FRAGMENT_MAPPER = 5;
+  private static readonly FIELD_TYPE_FIELD_REF_MAPPER = 6;
+  private static readonly FIELD_TYPE_FIELD_REF_NO_MAPPER = 7;
+  private static readonly FIELD_TYPE_SIMPLE = 8;
+
+  /**
    * Transform database results
    */
   private transformResults(rows: any[], selection: any): TSelection[] {
+    if (rows.length === 0) {
+      return [];
+    }
+
     // Check if mappers are disabled for performance
     const disableMappers = this.executor?.getOptions().disableMappers ?? false;
 
-    // Pre-analyze selection structure once instead of per-row
-    // This avoids repeated Object.entries() calls and type checks
-    const selectionKeys = Object.keys(selection);
-    const selectionEntries = Object.entries(selection);
+    // Pre-analyze selection structure ONCE and categorize each field
+    // This moves all type checks out of the per-row loop
+    const schemaColumnCache = this.schema.columnMetadataCache;
+    const fieldConfigs: Array<{
+      key: string;
+      type: number;
+      value: any;
+      mapper?: any;
+      aggregationType?: string;
+      innerMetadata?: any;
+      collectionBuilder?: CollectionQueryBuilder<any>;
+    }> = [];
 
-    // Pre-cache navigation placeholders to avoid repeated checks
-    // Only cache actual navigation properties (arrays and getter-based navigation)
-    const navigationPlaceholders: Record<string, any> = {};
-    for (const [key, value] of selectionEntries) {
+    // Single pass to categorize all fields
+    for (const key in selection) {
+      const value = selection[key];
+
+      // Check for navigation placeholders first (most common early exit)
       if (Array.isArray(value) && value.length === 0) {
-        navigationPlaceholders[key] = [];
-      } else if (value === undefined) {
-        navigationPlaceholders[key] = undefined;
-      } else if (value && typeof value === 'object' && !('__dbColumnName' in value) && !('__fieldName' in value)) {
-        // Check if it's a navigation property mock (object with getters)
-        // Exclude FieldRef objects by checking for __fieldName
+        fieldConfigs.push({ key, type: SelectQueryBuilder.FIELD_TYPE_NAVIGATION, value: [] });
+        continue;
+      }
+      if (value === undefined) {
+        fieldConfigs.push({ key, type: SelectQueryBuilder.FIELD_TYPE_NAVIGATION, value: undefined });
+        continue;
+      }
+
+      // Check for navigation property mocks (objects with getters)
+      // These are treated as SIMPLE because the actual value comes from json_build_object in the row
+      // The navigation mock is just a placeholder - actual data processing happens via FIELD_TYPE_SIMPLE
+      if (value && typeof value === 'object' && !('__dbColumnName' in value) && !('__fieldName' in value) && !('__collectionResult' in value) && !('__isAggregationArray' in value)) {
         const props = Object.getOwnPropertyNames(value);
         if (props.length > 0) {
-          const firstProp = props[0];
-          const descriptor = Object.getOwnPropertyDescriptor(value, firstProp);
+          const descriptor = Object.getOwnPropertyDescriptor(value, props[0]);
           if (descriptor && descriptor.get) {
-            navigationPlaceholders[key] = undefined;
+            // Navigation mock - treat as simple, data will come from row via json_build_object
+            // If row has no data, convertValue will return undefined
+            fieldConfigs.push({ key, type: SelectQueryBuilder.FIELD_TYPE_SIMPLE, value });
+            continue;
           }
         }
       }
-    }
 
-    // Pre-build column metadata cache to avoid repeated schema lookups
-    const columnMetadataCache: Record<string, { hasMapper: boolean; mapper?: any; config?: any }> = {};
-    if (!disableMappers) {
-      for (const [key, value] of selectionEntries) {
-        if (typeof value === 'object' && value !== null && '__fieldName' in value) {
+      // Collection types
+      if (value instanceof CollectionQueryBuilder || (value && typeof value === 'object' && '__collectionResult' in value)) {
+        const isScalarAgg = value instanceof CollectionQueryBuilder && value.isScalarAggregation();
+        if (isScalarAgg) {
+          const aggregationType = value.getAggregationType();
+          fieldConfigs.push({
+            key,
+            type: SelectQueryBuilder.FIELD_TYPE_COLLECTION_SCALAR,
+            value,
+            aggregationType
+          });
+        } else {
+          const isArrayAgg = value && typeof value === 'object' && 'isArrayAggregation' in value && value.isArrayAggregation();
+          if (isArrayAgg) {
+            fieldConfigs.push({ key, type: SelectQueryBuilder.FIELD_TYPE_COLLECTION_ARRAY, value });
+          } else {
+            fieldConfigs.push({
+              key,
+              type: SelectQueryBuilder.FIELD_TYPE_COLLECTION_JSON,
+              value,
+              collectionBuilder: value instanceof CollectionQueryBuilder ? value : undefined
+            });
+          }
+        }
+        continue;
+      }
+
+      // CTE aggregation array
+      if (typeof value === 'object' && value !== null && '__isAggregationArray' in value && (value as any).__isAggregationArray) {
+        fieldConfigs.push({
+          key,
+          type: SelectQueryBuilder.FIELD_TYPE_CTE_AGGREGATION,
+          value,
+          innerMetadata: (value as any).__innerSelectionMetadata
+        });
+        continue;
+      }
+
+      // SqlFragment with mapper
+      if (typeof value === 'object' && value !== null && typeof (value as any).getMapper === 'function') {
+        let mapper = disableMappers ? null : (value as any).getMapper();
+        if (mapper && typeof mapper.getType === 'function') {
+          mapper = mapper.getType();
+        }
+        if (mapper && typeof mapper.fromDriver === 'function') {
+          fieldConfigs.push({ key, type: SelectQueryBuilder.FIELD_TYPE_SQL_FRAGMENT_MAPPER, value, mapper });
+        } else {
+          fieldConfigs.push({ key, type: SelectQueryBuilder.FIELD_TYPE_SIMPLE, value });
+        }
+        continue;
+      }
+
+      // FieldRef with potential mapper
+      if (typeof value === 'object' && value !== null && '__fieldName' in value) {
+        if (disableMappers) {
+          fieldConfigs.push({ key, type: SelectQueryBuilder.FIELD_TYPE_FIELD_REF_NO_MAPPER, value });
+        } else {
           const fieldName = value.__fieldName as string;
-          const column = this.schema.columns[fieldName];
-          if (column) {
-            const config = column.build();
-            columnMetadataCache[key] = {
-              hasMapper: !!config.mapper,
-              mapper: config.mapper,
-              config: config,
-            };
+          const cached = schemaColumnCache?.get(fieldName);
+          if (cached && cached.hasMapper) {
+            fieldConfigs.push({ key, type: SelectQueryBuilder.FIELD_TYPE_FIELD_REF_MAPPER, value, mapper: cached.mapper });
+          } else if (cached) {
+            fieldConfigs.push({ key, type: SelectQueryBuilder.FIELD_TYPE_FIELD_REF_NO_MAPPER, value });
+          } else {
+            // Not in schema - treat as simple value
+            fieldConfigs.push({ key, type: SelectQueryBuilder.FIELD_TYPE_SIMPLE, value });
           }
         }
+        continue;
       }
+
+      // Default: simple value
+      fieldConfigs.push({ key, type: SelectQueryBuilder.FIELD_TYPE_SIMPLE, value });
     }
 
-    return rows.map(row => {
+    // Transform each row using pre-analyzed field configs
+    const results: TSelection[] = new Array(rows.length);
+    for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+      const row = rows[rowIdx];
       const result: any = {};
 
-      // Copy navigation placeholders without iteration
-      Object.assign(result, navigationPlaceholders);
+      // Process all fields using pre-computed types
+      for (let i = 0; i < fieldConfigs.length; i++) {
+        const config = fieldConfigs[i];
+        const key = config.key;
 
-      // Then process actual data fields
-      for (const [key, value] of selectionEntries) {
-        // Skip if we already set this key as a navigation placeholder
-        // UNLESS there's actual data for this key in the row (e.g., from json_build_object)
-        if (key in result && (result[key] === undefined || Array.isArray(result[key])) && !(key in row && row[key] !== undefined && row[key] !== null)) {
+        // Handle navigation placeholders separately
+        if (config.type === SelectQueryBuilder.FIELD_TYPE_NAVIGATION) {
+          result[key] = config.value;
           continue;
         }
 
-        if (value instanceof CollectionQueryBuilder || (value && typeof value === 'object' && '__collectionResult' in value)) {
-          // Check if this is a scalar aggregation (count, sum, max, min)
-          const isScalarAgg = value instanceof CollectionQueryBuilder && value.isScalarAggregation();
+        const rawValue = row[key];
 
-          if (isScalarAgg) {
-            // For scalar aggregations, return the value directly
-            // For COUNT, convertValue will handle numeric conversion (NULL is already COALESCE'd to 0 in SQL)
-            // For MAX/MIN/SUM, we want to keep NULL as null (not undefined)
-            const aggregationType = value.getAggregationType();
-            if (aggregationType === 'COUNT') {
-              result[key] = this.convertValue(row[key]);
+        switch (config.type) {
+          case SelectQueryBuilder.FIELD_TYPE_COLLECTION_SCALAR: {
+            if (config.aggregationType === 'COUNT') {
+              result[key] = this.convertValue(rawValue);
             } else {
-              // For MAX/MIN/SUM, preserve NULL and convert numeric strings to numbers
-              const rawValue = row[key];
+              // MAX/MIN/SUM: preserve NULL, convert numeric strings
               if (rawValue === null) {
                 result[key] = null;
               } else if (typeof rawValue === 'string' && NUMERIC_REGEX.test(rawValue)) {
@@ -2767,92 +2854,54 @@ export class SelectQueryBuilder<TSelection> {
                 result[key] = rawValue;
               }
             }
-          } else {
-            // Check if this is a flattened array result (toNumberList/toStringList)
-            const isArrayAgg = value && typeof value === 'object' && 'isArrayAggregation' in value && value.isArrayAggregation();
-
-            if (isArrayAgg) {
-              // For flattened arrays, PostgreSQL returns a native array - use it directly
-              result[key] = row[key] || [];
+            break;
+          }
+          case SelectQueryBuilder.FIELD_TYPE_COLLECTION_ARRAY:
+            result[key] = rawValue || [];
+            break;
+          case SelectQueryBuilder.FIELD_TYPE_COLLECTION_JSON: {
+            const items = rawValue || [];
+            if (config.collectionBuilder) {
+              result[key] = this.transformCollectionItems(items, config.collectionBuilder);
             } else {
-              // Parse JSON array from CTE (both CollectionQueryBuilder and CollectionResult are treated the same at runtime)
-              const collectionItems = row[key] || [];
-              // Apply fromDriver mappers to collection items if needed
-              if (value instanceof CollectionQueryBuilder) {
-                result[key] = this.transformCollectionItems(collectionItems, value);
-              } else {
-                result[key] = collectionItems;
-              }
+              result[key] = items;
             }
+            break;
           }
-        } else if (typeof value === 'object' && value !== null && '__isAggregationArray' in value && (value as any).__isAggregationArray) {
-          // CTE withAggregation array - apply mappers to items inside
-          const collectionItems = row[key] || [];
-          const innerMetadata = (value as any).__innerSelectionMetadata;
-          if (innerMetadata && !disableMappers) {
-            result[key] = this.transformCteAggregationItems(collectionItems, innerMetadata);
-          } else {
-            result[key] = collectionItems;
-          }
-        } else if (typeof value === 'object' && value !== null && typeof (value as any).getMapper === 'function') {
-          // SqlFragment with custom mapper (check this BEFORE FieldRef to handle subquery/CTE fields with mappers)
-          const rawValue = row[key];
-
-          if (disableMappers) {
-            // Skip mapper transformation for performance
-            result[key] = this.convertValue(rawValue);
-          } else {
-            let mapper = (value as any).getMapper();
-
-            if (mapper && rawValue !== null && rawValue !== undefined) {
-              // If mapper is a CustomTypeBuilder, get the actual type
-              if (typeof mapper.getType === 'function') {
-                mapper = mapper.getType();
-              }
-
-              // Apply the fromDriver transformation
-              if (typeof mapper.fromDriver === 'function') {
-                result[key] = mapper.fromDriver(rawValue);
-              } else {
-                // Fallback if fromDriver doesn't exist
-                result[key] = this.convertValue(rawValue);
-              }
+          case SelectQueryBuilder.FIELD_TYPE_CTE_AGGREGATION: {
+            const items = rawValue || [];
+            if (config.innerMetadata && !disableMappers) {
+              result[key] = this.transformCteAggregationItems(items, config.innerMetadata);
             } else {
-              // No mapper or null value - convert normally
+              result[key] = items;
+            }
+            break;
+          }
+          case SelectQueryBuilder.FIELD_TYPE_SQL_FRAGMENT_MAPPER: {
+            if (rawValue !== null && rawValue !== undefined && config.mapper) {
+              result[key] = config.mapper.fromDriver(rawValue);
+            } else {
               result[key] = this.convertValue(rawValue);
             }
+            break;
           }
-        } else if (typeof value === 'object' && value !== null && '__fieldName' in value) {
-          // FieldRef object - check if it has a custom mapper
-          const rawValue = row[key];
-
-          if (disableMappers) {
-            // Skip mapper transformation for performance
+          case SelectQueryBuilder.FIELD_TYPE_FIELD_REF_MAPPER:
+            result[key] = rawValue === null ? undefined : config.mapper.fromDriver(rawValue);
+            break;
+          case SelectQueryBuilder.FIELD_TYPE_FIELD_REF_NO_MAPPER:
             result[key] = rawValue === null ? undefined : rawValue;
-          } else {
-            // Use pre-cached column metadata instead of repeated lookups
-            const cached = columnMetadataCache[key];
-            if (cached) {
-              // Field is in our schema - use cached mapper info
-              result[key] = rawValue === null
-                ? undefined
-                : (cached.hasMapper ? cached.mapper.fromDriver(rawValue) : rawValue);
-            } else {
-              // Field not in schema (e.g., CTE field, joined table field)
-              // Always call convertValue to handle numeric string conversion
-              result[key] = this.convertValue(row[key]);
-            }
-          }
-        } else {
-          // Convert null to undefined for all other values
-          // Also convert numeric strings to numbers for scalar subqueries (PostgreSQL returns NUMERIC as string)
-          const converted = this.convertValue(row[key]);
-          result[key] = converted;
+            break;
+          case SelectQueryBuilder.FIELD_TYPE_SIMPLE:
+          default:
+            result[key] = this.convertValue(rawValue);
+            break;
         }
       }
 
-      return result as TSelection;
-    });
+      results[rowIdx] = result as TSelection;
+    }
+
+    return results;
   }
 
   /**
@@ -2864,11 +2913,9 @@ export class SelectQueryBuilder<TSelection> {
     }
     // Check if it's a numeric string (PostgreSQL NUMERIC type)
     // This handles scalar subqueries with aggregates like AVG, SUM, etc.
+    // The regex validates format, so Number() is guaranteed to produce a valid number
     if (typeof value === 'string' && NUMERIC_REGEX.test(value)) {
-      const num = Number(value);
-      if (!isNaN(num)) {
-        return num;
-      }
+      return +value; // Faster than Number(value)
     }
     return value;
   }
@@ -2890,17 +2937,37 @@ export class SelectQueryBuilder<TSelection> {
       return items;
     }
 
+    // Use pre-cached column metadata from target schema
+    // This avoids repeated column.build() calls for each item
+    const columnCache = targetSchema.columnMetadataCache;
+
+    if (!columnCache || columnCache.size === 0) {
+      // Fallback for schemas without cache (shouldn't happen, but be safe)
+      return items.map(item => {
+        const transformedItem: any = {};
+        for (const [key, value] of Object.entries(item)) {
+          const column = targetSchema.columns[key];
+          if (column) {
+            const config = column.build();
+            transformedItem[key] = config.mapper
+              ? config.mapper.fromDriver(value)
+              : value;
+          } else {
+            transformedItem[key] = value;
+          }
+        }
+        return transformedItem;
+      });
+    }
+
+    // Optimized path using cached metadata
     return items.map(item => {
       const transformedItem: any = {};
-      for (const [key, value] of Object.entries(item)) {
-        // Find the column in target schema
-        const column = targetSchema.columns[key];
-        if (column) {
-          const config = column.build();
-          // Apply fromDriver mapper if present
-          transformedItem[key] = config.mapper
-            ? config.mapper.fromDriver(value)
-            : value;
+      for (const key in item) {
+        const value = item[key];
+        const cached = columnCache.get(key);
+        if (cached && cached.hasMapper) {
+          transformedItem[key] = cached.mapper.fromDriver(value);
         } else {
           transformedItem[key] = value;
         }
@@ -2917,9 +2984,13 @@ export class SelectQueryBuilder<TSelection> {
       return [];
     }
 
+    // Use pre-cached column metadata from schema
+    const schemaColumnCache = this.schema.columnMetadataCache;
+
     // Build mapper cache from selection metadata
     const mapperCache: Record<string, any> = {};
-    for (const [key, value] of Object.entries(selectionMetadata)) {
+    for (const key in selectionMetadata) {
+      const value = selectionMetadata[key];
       // Check if value has getMapper (SqlFragment or field with mapper)
       if (typeof value === 'object' && value !== null && typeof (value as any).getMapper === 'function') {
         let mapper = (value as any).getMapper();
@@ -2934,20 +3005,30 @@ export class SelectQueryBuilder<TSelection> {
       // Check if it's a FieldRef with schema column mapper
       else if (typeof value === 'object' && value !== null && '__fieldName' in value) {
         const fieldName = (value as any).__fieldName as string;
-        const column = this.schema.columns[fieldName];
-        if (column) {
-          const config = column.build();
-          if (config.mapper && typeof config.mapper.fromDriver === 'function') {
-            mapperCache[key] = config.mapper;
+        // Use cached column metadata instead of column.build()
+        if (schemaColumnCache) {
+          const cached = schemaColumnCache.get(fieldName);
+          if (cached && cached.hasMapper && typeof cached.mapper.fromDriver === 'function') {
+            mapperCache[key] = cached.mapper;
+          }
+        } else {
+          // Fallback for schemas without cache
+          const column = this.schema.columns[fieldName];
+          if (column) {
+            const config = column.build();
+            if (config.mapper && typeof config.mapper.fromDriver === 'function') {
+              mapperCache[key] = config.mapper;
+            }
           }
         }
       }
     }
 
-    // Transform items
+    // Transform items using for-in loop (faster than Object.entries)
     return items.map(item => {
       const transformedItem: any = {};
-      for (const [key, value] of Object.entries(item)) {
+      for (const key in item) {
+        const value = item[key];
         const mapper = mapperCache[key];
         if (mapper && value !== null && value !== undefined) {
           transformedItem[key] = mapper.fromDriver(value);
