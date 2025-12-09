@@ -1,5 +1,5 @@
 import { DbEntity, EntityConstructor, EntityMetadataStore, PropertyMetadata, NavigationMetadata, ForeignKeyAction } from './entity-base';
-import { ColumnBuilder } from '../schema/column-builder';
+import { ColumnBuilder, IdentityOptions } from '../schema/column-builder';
 import { TypeMapper } from '../types/type-mapper';
 import { DbColumn } from './db-column';
 import { SqlFragment } from '../query/conditions';
@@ -96,6 +96,15 @@ export class EntityPropertyBuilder<TEntity extends DbEntity, TProperty> {
     // Apply mapper to column builder
     this.columnBuilder.mapWith(mapper);
 
+    return this;
+  }
+
+  /**
+   * Mark column as GENERATED ALWAYS AS IDENTITY (modern PostgreSQL identity columns)
+   * This is the preferred way over serial/bigserial for auto-incrementing primary keys
+   */
+  generatedAlwaysAsIdentity(options?: IdentityOptions): this {
+    this.columnBuilder.generatedAlwaysAsIdentity(options);
     return this;
   }
 }

@@ -22,6 +22,8 @@ export {
   jsonb,
   bytea,
   enumColumn,
+  ColumnBuilder,
+  IdentityOptions,
 } from './schema/column-builder';
 
 // Enum types
