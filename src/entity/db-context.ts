@@ -2808,7 +2808,9 @@ export class DbEntityTable<TEntity extends DbEntity> {
       const config = (colBuilder as any).build();
       const dbColumnName = config.name;
       if (dbColumnName in result) {
-        mapped[propName] = result[dbColumnName];
+        const rawValue = result[dbColumnName];
+        // Apply fromDriver mapper if present
+        mapped[propName] = config.mapper ? config.mapper.fromDriver(rawValue) : rawValue;
       }
     }
     return mapped as UnwrapDbColumns<TEntity>;

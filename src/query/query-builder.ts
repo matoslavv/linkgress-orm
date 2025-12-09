@@ -3610,7 +3610,17 @@ export class ReferenceQueryBuilder<TItem = any> {
       const fieldRefCache: Record<string, any> = {};
       const tableAlias = this.relationName;
 
+      // Build a mapper lookup for columns (only when needed)
+      const columnMappers: Record<string, any> = {};
+      for (const [colName, colBuilder] of Object.entries(this.targetTableSchema.columns)) {
+        const config = (colBuilder as any).build();
+        if (config.mapper) {
+          columnMappers[colName] = config.mapper;
+        }
+      }
+
       for (const [colName, dbColumnName] of columnNameMap) {
+        const mapper = columnMappers[colName];
         Object.defineProperty(mock, colName, {
           get() {
             let cached = fieldRefCache[colName];
@@ -3619,6 +3629,7 @@ export class ReferenceQueryBuilder<TItem = any> {
                 __fieldName: colName,
                 __dbColumnName: dbColumnName,
                 __tableAlias: tableAlias,  // Mark which table this belongs to
+                __mapper: mapper,  // Include mapper for toDriver transformation in conditions
               };
             }
             return cached;
