@@ -146,6 +146,32 @@ export class ColumnBuilder<TType = any> {
   }
 
   /**
+   * Convert this column to a PostgreSQL array type
+   *
+   * @example
+   * // integer[] column
+   * entity.property(e => e.permissions).hasType(integer('permissions').array<ADMIN_PERMISSION[]>());
+   *
+   * // text[] column
+   * entity.property(e => e.tags).hasType(text('tags').array<string[]>());
+   */
+  array<TArray extends TType[] = TType[]>(): ColumnBuilder<TArray> {
+    this.config.type = `${this.config.type}[]` as ColumnType;
+    return this as unknown as ColumnBuilder<TArray>;
+  }
+
+  /**
+   * Override the TypeScript type for this column
+   *
+   * @example
+   * // integer column typed as ADMIN_PERMISSION[]
+   * entity.property(e => e.permissions).hasType(integer('permissions').array().hasTypescriptType<ADMIN_PERMISSION[]>());
+   */
+  hasTypescriptType<TNewType>(): ColumnBuilder<TNewType> {
+    return this as unknown as ColumnBuilder<TNewType>;
+  }
+
+  /**
    * Get the final column configuration
    */
   build(): ColumnConfig {

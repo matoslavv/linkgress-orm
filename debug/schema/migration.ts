@@ -5,7 +5,7 @@ import { AppDatabase } from './appDatabase';
 /**
  * Database Migration Tool
  *
- * The migrator will:
+ * The schema manager will:
  * 1. Analyze the current database schema
  * 2. Compare it with the model definition
  * 3. Generate migration operations
@@ -31,8 +31,8 @@ async function main() {
   );
 
   try {
-    // Get the automatic migrator
-    const migrator = db.getMigrator();
+    // Get the schema manager
+    const schemaManager = db.getSchemaManager();
 
     // Run the migration
     // This will:
@@ -40,7 +40,7 @@ async function main() {
     // - Show all operations
     // - Prompt for confirmation on destructive operations
     // - Apply the changes
-    await migrator.migrate();
+    await schemaManager.migrate();
 
   } catch (error) {
     console.error('❌ Migration error:', error);

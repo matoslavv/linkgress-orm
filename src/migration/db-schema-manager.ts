@@ -251,10 +251,19 @@ export class DbSchemaManager {
 
   /**
    * Create a single table
+   * @param tableName - The table name
+   * @param tableSchema - The table schema
+   * @param options - Options for table creation
+   * @param options.skipForeignKeys - If true, foreign keys will not be added (useful for deferred FK creation)
    */
-  private async createTable(tableName: string, tableSchema: TableSchema): Promise<void> {
+  private async createTable(
+    tableName: string,
+    tableSchema: TableSchema,
+    options?: { skipForeignKeys?: boolean }
+  ): Promise<void> {
     const columnDefs: string[] = [];
     const primaryKeys: string[] = [];
+    const skipForeignKeys = options?.skipForeignKeys ?? false;
 
     for (const [colKey, colBuilder] of Object.entries(tableSchema.columns)) {
       const config = (colBuilder as any).build();
@@ -310,37 +319,40 @@ export class DbSchemaManager {
       columnDefs.push(`PRIMARY KEY (${primaryKeys.join(', ')})`);
     }
 
-    // Add foreign key constraints from schema.foreignKeys (includes ON DELETE/ON UPDATE actions)
-    const foreignKeys = tableSchema.foreignKeys || [];
-    for (const fk of foreignKeys) {
-      const columnList = fk.columns.map(c => `"${c}"`).join(', ');
-      const refColumnList = fk.referencedColumns.map(c => `"${c}"`).join(', ');
+    // Add foreign key constraints only if not skipped
+    if (!skipForeignKeys) {
+      // Add foreign key constraints from schema.foreignKeys (includes ON DELETE/ON UPDATE actions)
+      const foreignKeys = tableSchema.foreignKeys || [];
+      for (const fk of foreignKeys) {
+        const columnList = fk.columns.map(c => `"${c}"`).join(', ');
+        const refColumnList = fk.referencedColumns.map(c => `"${c}"`).join(', ');
 
-      // Find the referenced table's schema
-      const referencedTableSchema = this.schemaRegistry.get(fk.referencedTable);
-      const qualifiedReferencedTable = this.getQualifiedTableName(fk.referencedTable, referencedTableSchema?.schema);
+        // Find the referenced table's schema
+        const referencedTableSchema = this.schemaRegistry.get(fk.referencedTable);
+        const qualifiedReferencedTable = this.getQualifiedTableName(fk.referencedTable, referencedTableSchema?.schema);
 
-      let fkDef = `CONSTRAINT "${fk.name}" FOREIGN KEY (${columnList}) REFERENCES ${qualifiedReferencedTable}(${refColumnList})`;
+        let fkDef = `CONSTRAINT "${fk.name}" FOREIGN KEY (${columnList}) REFERENCES ${qualifiedReferencedTable}(${refColumnList})`;
 
-      if (fk.onDelete) {
-        fkDef += ` ON DELETE ${fk.onDelete.toUpperCase()}`;
+        if (fk.onDelete) {
+          fkDef += ` ON DELETE ${fk.onDelete.toUpperCase()}`;
+        }
+        if (fk.onUpdate) {
+          fkDef += ` ON UPDATE ${fk.onUpdate.toUpperCase()}`;
+        }
+
+        columnDefs.push(fkDef);
       }
-      if (fk.onUpdate) {
-        fkDef += ` ON UPDATE ${fk.onUpdate.toUpperCase()}`;
-      }
 
-      columnDefs.push(fkDef);
-    }
-
-    // Fallback: Add foreign key constraints from column references (for backward compatibility)
-    // Only add if not already added via foreignKeys array
-    const addedFkColumns = new Set(foreignKeys.flatMap(fk => fk.columns));
-    for (const [colKey, colBuilder] of Object.entries(tableSchema.columns)) {
-      const config = (colBuilder as any).build();
-      if (config.references && !addedFkColumns.has(config.name)) {
-        columnDefs.push(
-          `FOREIGN KEY ("${config.name}") REFERENCES "${config.references.table}"("${config.references.column}")`
-        );
+      // Fallback: Add foreign key constraints from column references (for backward compatibility)
+      // Only add if not already added via foreignKeys array
+      const addedFkColumns = new Set(foreignKeys.flatMap(fk => fk.columns));
+      for (const [colKey, colBuilder] of Object.entries(tableSchema.columns)) {
+        const config = (colBuilder as any).build();
+        if (config.references && !addedFkColumns.has(config.name)) {
+          columnDefs.push(
+            `FOREIGN KEY ("${config.name}") REFERENCES "${config.references.table}"("${config.references.column}")`
+          );
+        }
       }
     }
 
@@ -357,6 +369,59 @@ export class DbSchemaManager {
     await this.client.query(createTableSQL);
     if (this.logQueries) {
       console.log(`  ✓ Table ${qualifiedTableName} created\n`);
+    }
+  }
+
+  /**
+   * Add foreign key constraints to a table (used after all tables are created)
+   */
+  private async addForeignKeysToTable(tableName: string, tableSchema: TableSchema): Promise<void> {
+    const qualifiedTableName = this.getQualifiedTableName(tableName, tableSchema.schema);
+
+    // Add foreign key constraints from schema.foreignKeys
+    const foreignKeys = tableSchema.foreignKeys || [];
+    for (const fk of foreignKeys) {
+      const columnList = fk.columns.map(c => `"${c}"`).join(', ');
+      const refColumnList = fk.referencedColumns.map(c => `"${c}"`).join(', ');
+
+      // Find the referenced table's schema
+      const referencedTableSchema = this.schemaRegistry.get(fk.referencedTable);
+      const qualifiedReferencedTable = this.getQualifiedTableName(fk.referencedTable, referencedTableSchema?.schema);
+
+      let alterSQL = `ALTER TABLE ${qualifiedTableName} ADD CONSTRAINT "${fk.name}" FOREIGN KEY (${columnList}) REFERENCES ${qualifiedReferencedTable}(${refColumnList})`;
+
+      if (fk.onDelete) {
+        alterSQL += ` ON DELETE ${fk.onDelete.toUpperCase()}`;
+      }
+      if (fk.onUpdate) {
+        alterSQL += ` ON UPDATE ${fk.onUpdate.toUpperCase()}`;
+      }
+
+      if (this.logQueries) {
+        console.log(`  Adding foreign key ${fk.name} to ${qualifiedTableName}...`);
+      }
+      await this.client.query(alterSQL);
+      if (this.logQueries) {
+        console.log(`  ✓ Foreign key ${fk.name} added\n`);
+      }
+    }
+
+    // Fallback: Add foreign key constraints from column references (for backward compatibility)
+    const addedFkColumns = new Set(foreignKeys.flatMap(fk => fk.columns));
+    for (const [colKey, colBuilder] of Object.entries(tableSchema.columns)) {
+      const config = (colBuilder as any).build();
+      if (config.references && !addedFkColumns.has(config.name)) {
+        const fkName = `fk_${tableName}_${config.name}`;
+        const alterSQL = `ALTER TABLE ${qualifiedTableName} ADD CONSTRAINT "${fkName}" FOREIGN KEY ("${config.name}") REFERENCES "${config.references.table}"("${config.references.column}")`;
+
+        if (this.logQueries) {
+          console.log(`  Adding foreign key ${fkName} to ${qualifiedTableName}...`);
+        }
+        await this.client.query(alterSQL);
+        if (this.logQueries) {
+          console.log(`  ✓ Foreign key ${fkName} added\n`);
+        }
+      }
     }
   }
 
@@ -685,6 +750,10 @@ export class DbSchemaManager {
 
   /**
    * Perform automatic migration - analyze and apply changes
+   *
+   * Tables are created first without foreign keys, then foreign keys are added
+   * in a second pass. This ensures all referenced tables exist before FK constraints
+   * are created.
    */
   async migrate(): Promise<void> {
     try {
@@ -695,17 +764,101 @@ export class DbSchemaManager {
         return;
       }
 
-      console.log(`📋 Found ${operations.length} operations to perform:\n`);
+      // Separate operations into phases:
+      // Phase 1: Schema, enum, table creation (without FKs), column additions
+      // Phase 2: Foreign key constraints
+      // Phase 3: Indexes and other operations
+      const phase1Ops: MigrationOperation[] = [];
+      const phase2Ops: MigrationOperation[] = [];
+      const phase3Ops: MigrationOperation[] = [];
+
+      // Track which tables are being created so we can add their FKs later
+      const tablesToCreate = new Set<string>();
+
+      for (const op of operations) {
+        if (op.type === 'create_schema' || op.type === 'create_enum') {
+          phase1Ops.push(op);
+        } else if (op.type === 'create_table') {
+          phase1Ops.push(op);
+          tablesToCreate.add(op.tableName);
+        } else if (op.type === 'add_column' || op.type === 'drop_column' || op.type === 'alter_column') {
+          phase1Ops.push(op);
+        } else if (op.type === 'create_foreign_key') {
+          phase2Ops.push(op);
+        } else if (op.type === 'drop_table' || op.type === 'drop_foreign_key') {
+          // Destructive operations go first (before creating new things that might conflict)
+          phase1Ops.unshift(op);
+        } else {
+          phase3Ops.push(op);
+        }
+      }
+
+      // For newly created tables, we need to add their FK constraints in phase 2
+      // Extract FK operations from create_table schemas
+      for (const tableName of tablesToCreate) {
+        const schema = this.schemaRegistry.get(tableName);
+        if (schema) {
+          const foreignKeys = schema.foreignKeys || [];
+          for (const fk of foreignKeys) {
+            phase2Ops.push({
+              type: 'create_foreign_key',
+              tableName,
+              constraint: fk
+            });
+          }
+
+          // Also check column-level references
+          const addedFkColumns = new Set(foreignKeys.flatMap(fk => fk.columns));
+          for (const [_, colBuilder] of Object.entries(schema.columns)) {
+            const config = (colBuilder as any).build();
+            if (config.references && !addedFkColumns.has(config.name)) {
+              phase2Ops.push({
+                type: 'create_foreign_key',
+                tableName,
+                constraint: {
+                  name: `fk_${tableName}_${config.name}`,
+                  columns: [config.name],
+                  referencedTable: config.references.table,
+                  referencedColumns: [config.references.column]
+                }
+              });
+            }
+          }
+        }
+      }
+
+      const totalOps = phase1Ops.length + phase2Ops.length + phase3Ops.length;
+      console.log(`📋 Found ${totalOps} operations to perform:\n`);
 
       // Show all operations
-      for (let i = 0; i < operations.length; i++) {
-        console.log(`${i + 1}. ${this.describeOperation(operations[i])}`);
+      let opNum = 1;
+      for (const op of [...phase1Ops, ...phase2Ops, ...phase3Ops]) {
+        console.log(`${opNum++}. ${this.describeOperation(op)}`);
       }
       console.log('');
 
-      // Execute operations with confirmations for destructive ones
-      for (const operation of operations) {
-        await this.executeOperation(operation);
+      // Phase 1: Create schemas, enums, tables (without FKs), column changes
+      if (phase1Ops.length > 0) {
+        console.log('📦 Phase 1: Creating schemas, enums, and tables...\n');
+        for (const operation of phase1Ops) {
+          await this.executeOperation(operation, { skipForeignKeys: tablesToCreate.has((operation as any).tableName) });
+        }
+      }
+
+      // Phase 2: Add foreign key constraints
+      if (phase2Ops.length > 0) {
+        console.log('🔗 Phase 2: Adding foreign key constraints...\n');
+        for (const operation of phase2Ops) {
+          await this.executeOperation(operation);
+        }
+      }
+
+      // Phase 3: Create indexes and other operations
+      if (phase3Ops.length > 0) {
+        console.log('📇 Phase 3: Creating indexes...\n');
+        for (const operation of phase3Ops) {
+          await this.executeOperation(operation);
+        }
       }
 
       console.log('\n✓ Migration completed successfully\n');
@@ -728,7 +881,10 @@ export class DbSchemaManager {
   /**
    * Execute a single migration operation
    */
-  private async executeOperation(operation: MigrationOperation): Promise<void> {
+  private async executeOperation(
+    operation: MigrationOperation,
+    options?: { skipForeignKeys?: boolean }
+  ): Promise<void> {
     switch (operation.type) {
       case 'create_schema':
         await this.executeCreateSchema(operation.schemaName);
@@ -739,7 +895,7 @@ export class DbSchemaManager {
         break;
 
       case 'create_table':
-        await this.createTable(operation.tableName, operation.schema);
+        await this.createTable(operation.tableName, operation.schema, { skipForeignKeys: options?.skipForeignKeys });
         break;
 
       case 'drop_table':
