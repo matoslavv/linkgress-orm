@@ -898,7 +898,7 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
    *
    * Optimization: When grouping by SqlFragment expressions, we wrap the base query
    * in a subquery to avoid repeating complex expressions in both SELECT and GROUP BY.
-   * This matches the pattern used by Drizzle and improves query performance.
+   * This improves query performance by computing expressions only once.
    *
    * Without optimization:
    *   SELECT complex_expr as "alias" FROM table GROUP BY complex_expr

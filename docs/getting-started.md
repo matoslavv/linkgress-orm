@@ -150,7 +150,7 @@ export class AppDatabase extends DbContext {
 
       entity.property(e => e.id).hasType(integer('id').primaryKey().generatedAlwaysAsIdentity({ name: 'orders_id_seq' }));
       entity.property(e => e.userId).hasType(integer('user_id')).isRequired();
-      entity.property(e => e.status).hasType(varchar('status', 20)).hasDefaultValue('pending');
+      entity.property(e => e.status).hasType(varchar('status', 20)).hasDefaultValue("'pending'");
       entity.property(e => e.totalAmount).hasType(decimal('total_amount', 10, 2)).isRequired();
       entity.property(e => e.createdAt).hasType(timestamp('created_at')).hasDefaultValue('NOW()');
 

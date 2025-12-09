@@ -205,6 +205,35 @@ entity.property(e => e.config).hasType(json('config'));
 entity.property(e => e.fileData).hasType(bytea('file_data'));
 ```
 
+### Array Types
+
+PostgreSQL array columns can be defined using the `.array()` method:
+
+```typescript
+// String array
+entity.property(e => e.tags)
+  .hasType(varchar('tags', 50).array());
+
+// Integer array
+entity.property(e => e.scores)
+  .hasType(integer('scores').array());
+
+// With TypeScript type override for better type inference
+entity.property(e => e.permissions)
+  .hasType(integer('permissions').array().hasTypescriptType<Permission[]>());
+```
+
+The entity property should be typed as an array:
+
+```typescript
+export class Post extends DbEntity {
+  id!: DbColumn<number>;
+  tags!: DbColumn<string[]>;
+  scores?: DbColumn<number[]>;
+  permissions!: DbColumn<Permission[]>;
+}
+```
+
 ## Relationships
 
 Linkgress supports three types of relationships:
@@ -286,6 +315,52 @@ model.entity(Post, entity => {
     .isRequired();
 });
 ```
+
+### One-to-One Relationships with Inverse Navigation
+
+For one-to-one relationships where you want navigation from both sides but only one foreign key constraint, use `isInverseNavigation()`:
+
+```typescript
+// Entity classes
+export class UserProfile extends DbEntity {
+  id!: DbColumn<number>;
+  userId!: DbColumn<number>;  // FK to User
+  bio!: DbColumn<string>;
+  user?: User;
+}
+
+export class User extends DbEntity {
+  id!: DbColumn<number>;
+  username!: DbColumn<string>;
+  profile?: UserProfile;  // Inverse navigation
+}
+
+// DbContext configuration
+model.entity(UserProfile, entity => {
+  entity.toTable('user_profiles');
+
+  // This side has the FK constraint
+  entity.hasOne(e => e.user, () => User)
+    .withForeignKey(p => p.userId)
+    .withPrincipalKey(u => u.id)
+    .onDelete('cascade');
+});
+
+model.entity(User, entity => {
+  entity.toTable('users');
+
+  // This is the inverse side - no FK constraint created
+  entity.hasOne(e => e.profile, () => UserProfile)
+    .withForeignKey(u => u.id)
+    .withPrincipalKey(p => p.userId)
+    .isInverseNavigation();  // <-- Marks as inverse, no FK created
+});
+```
+
+**When to use `isInverseNavigation()`:**
+- One-to-one relationships where both entities need navigation properties
+- The FK constraint should only exist on one side
+- Prevents duplicate foreign key constraints in the database
 
 ### Composite Foreign Keys
 
@@ -474,47 +549,115 @@ model.entity(Post, entity => {
 });
 ```
 
-### Working with Sequences
+### Custom Sequences (DbSequence)
 
-You can interact with sequences directly through the DbContext:
+You can define custom sequences in your DbContext for generating unique IDs, order numbers, or any sequential values:
 
 ```typescript
-// Get current sequence value
-const currentValue = await db.getCurrentSequenceValue('users_id_seq');
+import { DbContext, DbSequence, sequence } from 'linkgress-orm';
 
-// Get next sequence value
-const nextValue = await db.getNextSequenceValue('users_id_seq');
+export class AppDatabase extends DbContext {
+  // Sequence accessors - similar to table accessors
+  get orderNumberSeq(): DbSequence {
+    return this.sequence(
+      sequence('order_number_seq')
+        .startWith(1000)
+        .incrementBy(1)
+        .build()
+    );
+  }
 
-// Set sequence value
-await db.setSequenceValue('users_id_seq', 5000);
+  get customerCodeSeq(): DbSequence {
+    return this.sequence(
+      sequence('customer_code_seq')
+        .inSchema('public')
+        .startWith(100)
+        .incrementBy(5)
+        .cache(20)  // Cache 20 values for performance
+        .build()
+    );
+  }
 
-// Reset sequence to start value
-await db.resetSequence('users_id_seq');
+  // Register sequences in setupSequences
+  protected override setupSequences(): void {
+    this.orderNumberSeq;
+    this.customerCodeSeq;
+  }
+}
 ```
 
-**Note:** The sequence methods are available on your DbContext instance and can be used for managing sequences programmatically.
+### Using Sequences
+
+```typescript
+// Get next value (increments the sequence)
+const orderNum = await db.orderNumberSeq.nextValue();
+console.log(`Order: ORD-${orderNum}`);  // ORD-1000, ORD-1001, ...
+
+// Get current value (without incrementing)
+const current = await db.orderNumberSeq.currentValue();
+
+// Resync sequence to a specific value
+await db.orderNumberSeq.resync(5000);
+
+// Get sequence configuration
+const config = db.orderNumberSeq.getConfig();
+console.log(config.name, config.startWith, config.incrementBy);
+
+// Get qualified name (with schema if applicable)
+const name = db.customerCodeSeq.getQualifiedName();  // "public"."customer_code_seq"
+```
+
+### Sequence Builder Options
+
+```typescript
+sequence('my_sequence')
+  .inSchema('public')      // Schema name (optional)
+  .startWith(1000)         // Starting value
+  .incrementBy(5)          // Increment step
+  .minValue(1)             // Minimum value
+  .maxValue(999999)        // Maximum value
+  .cache(20)               // Number of values to cache
+  .cycle()                 // Restart when reaching max/min
+  .build()
+```
+
+**Note:** Custom sequences are automatically created during `ensureCreated()` and `migrate()` operations.
 
 ## Default Values
 
-Set default values for columns:
+Set default values for columns. The `hasDefaultValue()` method passes string values directly to PostgreSQL as raw SQL, giving you full control over the default expression.
 
-### Static Defaults
+### Numeric and Boolean Defaults
 
 ```typescript
 entity.property(e => e.isActive)
   .hasType(boolean('is_active'))
   .hasDefaultValue(true);
 
-entity.property(e => e.status)
-  .hasType(varchar('status', 20))
-  .hasDefaultValue('pending');
-
 entity.property(e => e.count)
   .hasType(integer('count'))
   .hasDefaultValue(0);
 ```
 
+### String Literal Defaults
+
+Since strings are passed through as raw SQL, you must include SQL quotes for string literals:
+
+```typescript
+// IMPORTANT: Include single quotes for string literals
+entity.property(e => e.status)
+  .hasType(varchar('status', 20))
+  .hasDefaultValue("'pending'");
+
+// For enum columns, include the quotes
+entity.property(e => e.category)
+  .hasType(enumColumn('category', categoryEnum))
+  .hasDefaultValue("'tech'");
+```
+
 ### SQL Function Defaults
+
+SQL functions and expressions work directly:
 
 ```typescript
 entity.property(e => e.createdAt)
@@ -524,6 +667,33 @@ entity.property(e => e.createdAt)
 entity.property(e => e.guid)
   .hasType(uuid('guid'))
   .hasDefaultValue('gen_random_uuid()');
+
+entity.property(e => e.updatedAt)
+  .hasType(timestamptz('updated_at'))
+  .hasDefaultValue('CURRENT_TIMESTAMP');
+```
+
+### Using sql.raw() for Complex Defaults
+
+For complex SQL expressions, you can use `sql.raw()` which also passes through without formatting:
+
+```typescript
+import { sql } from 'linkgress-orm';
+
+// Array default
+entity.property(e => e.tags)
+  .hasType(varchar('tags', 50).array())
+  .hasDefaultValue(sql.raw("'{}'::varchar[]"));
+
+// JSONB default
+entity.property(e => e.metadata)
+  .hasType(jsonb('metadata'))
+  .hasDefaultValue(sql.raw("'{}'::jsonb"));
+
+// Complex expression
+entity.property(e => e.expiredAt)
+  .hasType(timestamp('expired_at'))
+  .hasDefaultValue(sql.raw("NOW() + INTERVAL '30 days'"));
 ```
 
 ## Custom Types
@@ -641,7 +811,7 @@ export class AppDatabase extends DbContext {
 
       entity.property(e => e.id).hasType(integer('id').primaryKey().generatedAlwaysAsIdentity({ name: 'orders_id_seq' }));
       entity.property(e => e.userId).hasType(integer('user_id')).isRequired();
-      entity.property(e => e.status).hasType(varchar('status', 20)).hasDefaultValue('pending');
+      entity.property(e => e.status).hasType(varchar('status', 20)).hasDefaultValue("'pending'");
       entity.property(e => e.totalAmount).hasType(decimal('total_amount', 10, 2)).isRequired();
       entity.property(e => e.createdAt).hasType(timestamp('created_at')).hasDefaultValue('NOW()');
 
