@@ -19,6 +19,7 @@ A type-safe ORM for PostgreSQL and TypeScript with automatic type inference and 
 - **Nested Collection Queries** - Query one-to-many relationships with CTE, LATERAL, or temp table strategies
 - **Type-Safe Aggregations** - `count()`, `sum()`, `max()`, `min()` return proper types
 - **Powerful Filtering** - Type-checked query conditions
+- **Fluent Update/Delete** - Chain `.where().update()` and `.where().delete()` with RETURNING support
 - **Transaction Support** - Safe, type-checked transactions
 - **Multiple Clients** - Works with both `pg` and `postgres` npm packages
 
@@ -139,6 +140,17 @@ const usersWithStats = await db.users
       .toList('posts'),
   }))
   .toList();
+
+// Fluent update with RETURNING
+const updatedUsers = await db.users
+  .where(u => eq(u.username, 'alice'))
+  .update({ email: 'alice.new@example.com' })
+  .returning(u => ({ id: u.id, email: u.email }));
+
+// Fluent delete
+await db.users
+  .where(u => eq(u.username, 'old_user'))
+  .delete();
 
 // Note: Only call dispose() when shutting down your application
 // For long-running apps (servers), keep the db instance alive

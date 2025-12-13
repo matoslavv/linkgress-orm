@@ -71,6 +71,9 @@ const users = await db.users
 - Pattern matching: `like`, `ilike`
 - Array: `inArray`, `notInArray`
 - Null checking: `isNull`, `isNotNull`
+- JSONB: `jsonbSelect`, `jsonbSelectText`
+- Utility: `coalesce`
+- Bitmask/Flags: `flagHas`, `flagHasAll`, `flagHasAny`, `flagHasNone`
 
 ### Ordering Results
 
@@ -535,6 +538,123 @@ const posts = await db.posts
   }))
   .toList();
 ```
+
+## Built-in Operators
+
+Linkgress provides type-safe operators for common SQL operations.
+
+### Coalesce
+
+Return the first non-null value:
+
+```typescript
+import { coalesce } from 'linkgress-orm';
+
+// Return age or default to 0 if null
+const users = await db.users
+  .select(u => ({
+    id: u.id,
+    username: u.username,
+    effectiveAge: coalesce(u.age, 0),
+  }))
+  .toList();
+
+// Chain with other columns
+const posts = await db.posts
+  .select(p => ({
+    id: p.id,
+    displayTitle: coalesce(p.subtitle, p.title),  // subtitle first, fallback to title
+  }))
+  .toList();
+```
+
+### JSONB Operators
+
+Extract values from JSONB columns with type safety:
+
+```typescript
+import { jsonbSelect, jsonbSelectText } from 'linkgress-orm';
+
+// Define your JSONB structure type
+type OrderItems = {
+  productName: string;
+  quantity: number;
+  price: number;
+};
+
+// jsonbSelect: Extract property as JSONB (-> operator)
+const orders = await db.orders
+  .select(o => ({
+    id: o.id,
+    productName: jsonbSelect<OrderItems>(o.items, 'productName'),
+    quantity: jsonbSelect<OrderItems>(o.items, 'quantity'),
+  }))
+  .toList();
+
+// jsonbSelectText: Extract property as text (->> operator)
+const orders = await db.orders
+  .select(o => ({
+    id: o.id,
+    productNameText: jsonbSelectText<OrderItems>(o.items, 'productName'),
+  }))
+  .toList();
+
+// Combine with coalesce for null safety
+const orders = await db.orders
+  .select(o => ({
+    id: o.id,
+    displayName: coalesce(
+      jsonbSelectText<OrderItems>(o.items, 'productName'),
+      'Unknown Product'
+    ),
+  }))
+  .toList();
+```
+
+### Flag/Bitmask Operators
+
+Work with bitmask/flag columns efficiently:
+
+```typescript
+import { flagHas, flagHasAll, flagHasAny, flagHasNone } from 'linkgress-orm';
+
+// Define your flags as a TypeScript enum
+enum Permission {
+  None = 0,
+  Read = 1,
+  Write = 2,
+  Delete = 4,
+  Admin = 8,
+  ReadWrite = Read | Write,  // 3
+  All = Read | Write | Delete | Admin,  // 15
+}
+
+// flagHas: Check if a specific flag is set (column & flag) != 0
+const readableUsers = await db.users
+  .where(u => flagHas(u.permissions, Permission.Read))
+  .toList();
+
+// flagHasAll: Check if ALL specified flags are set (column & flags) = flags
+const admins = await db.users
+  .where(u => flagHasAll(u.permissions, Permission.ReadWrite))  // Must have both Read AND Write
+  .toList();
+
+// flagHasAny: Check if ANY of the specified flags are set (column & flags) != 0
+const usersWithAnyAccess = await db.users
+  .where(u => flagHasAny(u.permissions, Permission.Read | Permission.Write))
+  .toList();
+
+// flagHasNone: Check that a flag is NOT set (column & flag) = 0
+const nonAdmins = await db.users
+  .where(u => flagHasNone(u.permissions, Permission.Admin))
+  .toList();
+```
+
+**Flag Operator Reference:**
+- `flagHas(column, flag)` - Check if flag is set: `(column & flag) != 0`
+- `flagHasAll(column, flags)` - Check if ALL flags are set: `(column & flags) = flags`
+- `flagHasAny(column, flags)` - Check if ANY flag is set: `(column & flags) != 0`
+- `flagHasNone(column, flag)` - Check if flag is NOT set: `(column & flag) = 0`
 
 ## Advanced Patterns
 

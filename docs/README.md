@@ -31,7 +31,7 @@ Complete documentation for Linkgress ORM - A type-safe ORM for PostgreSQL and Ty
   - DbContext setup
   - Column types
   - Relationships (one-to-many, many-to-one)
-  - Indexes and constraints
+  - Indexes and constraints (including unique indexes with `.isUnique()`)
   - Default values
   - Custom types
 
@@ -53,13 +53,14 @@ Complete documentation for Linkgress ORM - A type-safe ORM for PostgreSQL and Ty
   - Subqueries
   - CTEs (Common Table Expressions)
   - Magic SQL strings with custom formatters
+  - Built-in operators: coalesce, JSONB extraction, flag/bitmask operations
   - Advanced patterns and type safety
 
 - **[Insert/Update/Upsert/BULK](./guides/insert-update-guide.md)** - Insert, update, and delete operations
-  - Simple insert and update
+  - Fluent API for update and delete (`.where().update()`, `.where().delete()`)
+  - RETURNING clause support with selectors
   - Bulk insert and update
   - Upsert (INSERT ... ON CONFLICT)
-  - Delete operations
   - Type safety and performance tips
 
 ### 🚀 Advanced Topics

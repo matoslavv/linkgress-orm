@@ -63,6 +63,8 @@ console.log(users.length); // 3
 
 ## Update Operations
 
+Linkgress ORM uses a **fluent API** for update operations. You first specify the condition using `.where()`, then call `.update()` with the data.
+
 ### Simple Update
 
 Update records matching a condition:
@@ -70,24 +72,22 @@ Update records matching a condition:
 ```typescript
 import { eq } from 'linkgress-orm';
 
-// Update a single user
-const updated = await db.users
+// Update a single user (fluent API: where -> update)
+await db.users
   .where(u => eq(u.id, 1))
   .update({
     email: 'alice.new@example.com',
     isActive: false
   });
-
-console.log(updated); // Number of rows updated: 1
 ```
 
 ### Update with Multiple Conditions
 
 ```typescript
-import { eq, gt } from 'linkgress-orm';
+import { eq, gt, and } from 'linkgress-orm';
 
 // Update all users with id > 10 and isActive = true
-const count = await db.users
+await db.users
   .where(u => and(
     gt(u.id, 10),
     eq(u.isActive, true)
@@ -95,22 +95,30 @@ const count = await db.users
   .update({
     isActive: false
   });
-
-console.log(`Updated ${count} users`);
 ```
 
 ### Update with Returning Values
 
+Use `.returning()` to get back the updated records:
+
 ```typescript
-// Update and return the updated records
+// Update and return all columns
 const updatedUsers = await db.users
   .where(u => eq(u.username, 'alice'))
-  .updateReturning({
-    email: 'alice.updated@example.com'
-  });
+  .update({ email: 'alice.updated@example.com' })
+  .returning();
 
 console.log(updatedUsers);
-// [{ id: 1, username: 'alice', email: 'alice.updated@example.com', isActive: false }]
+// [{ id: 1, username: 'alice', email: 'alice.updated@example.com', isActive: true, ... }]
+
+// Update and return specific columns
+const results = await db.users
+  .where(u => eq(u.id, 1))
+  .update({ age: 30 })
+  .returning(u => ({ id: u.id, age: u.age }));
+
+console.log(results);
+// [{ id: 1, age: 30 }]
 ```
 
 ## Upsert Operations
@@ -186,6 +194,8 @@ console.log(`Upserted ${users.length} users`);
 
 ## Delete Operations
 
+Linkgress ORM uses a **fluent API** for delete operations. You first specify the condition using `.where()`, then call `.delete()`.
+
 ### Simple Delete
 
 Delete records matching a condition:
@@ -193,12 +203,10 @@ Delete records matching a condition:
 ```typescript
 import { eq } from 'linkgress-orm';
 
-// Delete a specific user
-const deleted = await db.users
+// Delete a specific user (fluent API: where -> delete)
+await db.users
   .where(u => eq(u.id, 1))
   .delete();
-
-console.log(deleted); // Number of rows deleted: 1
 ```
 
 ### Delete with Multiple Conditions
@@ -207,35 +215,44 @@ console.log(deleted); // Number of rows deleted: 1
 import { and, lt, eq } from 'linkgress-orm';
 
 // Delete inactive users with id < 100
-const count = await db.users
+await db.users
   .where(u => and(
     eq(u.isActive, false),
     lt(u.id, 100)
   ))
   .delete();
-
-console.log(`Deleted ${count} users`);
 ```
 
 ### Delete with Returning Values
 
+Use `.returning()` to get back the deleted records:
+
 ```typescript
-// Delete and return the deleted records
+// Delete and return all columns
 const deletedUsers = await db.users
   .where(u => eq(u.isActive, false))
-  .deleteReturning();
+  .delete()
+  .returning();
 
 console.log(deletedUsers);
-// Array of deleted user records
+// Array of deleted user records with all columns
+
+// Delete and return specific columns
+const deletedIds = await db.users
+  .where(u => eq(u.isActive, false))
+  .delete()
+  .returning(u => ({ id: u.id, username: u.username }));
+
+console.log(deletedIds);
+// [{ id: 5, username: 'inactive_user' }, ...]
 ```
 
 ### Delete All Records
 
 ```typescript
 // ⚠️ Warning: Deletes all records in the table
-const count = await db.users.delete();
-
-console.log(`Deleted ${count} users`);
+// Use with extreme caution!
+await db.users.delete();
 ```
 
 ## Type Safety
@@ -436,54 +453,76 @@ async function permanentlyDeleteInactiveUsers(daysOld: number) {
 ### Insert Methods
 
 ```typescript
-// Insert single record
-insert(data: Partial<TEntity>): Promise<TEntity>
-insert(data: Partial<TEntity>, returning: string[]): Promise<Partial<TEntity>>
+// Insert single record (returns void by default)
+insert(data: Partial<TEntity>): FluentInsert<TEntity>
+
+// Insert with returning
+insert(data: Partial<TEntity>).returning(): Promise<TEntity>
+insert(data: Partial<TEntity>).returning(selector): Promise<Partial<TEntity>>
 
 // Insert multiple records
-insertMany(data: Partial<TEntity>[]): Promise<TEntity[]>
+insertMany(data: Partial<TEntity>[]): FluentInsertMany<TEntity>
+insertBulk(data: Partial<TEntity>[]): FluentInsertMany<TEntity>
 ```
 
-### Update Methods
+### Update Methods (Fluent API)
 
 ```typescript
-// Update with count
-update(data: Partial<TEntity>): Promise<number>
+// Fluent update: where -> update -> optional returning
+db.table
+  .where(condition)
+  .update(data: Partial<TEntity>): FluentQueryUpdate<TEntity>
 
-// Update with returning
-updateReturning(data: Partial<TEntity>): Promise<TEntity[]>
+// With returning
+db.table
+  .where(condition)
+  .update(data)
+  .returning(): Promise<TEntity[]>
+
+db.table
+  .where(condition)
+  .update(data)
+  .returning(selector): Promise<Partial<TEntity>[]>
 ```
 
 ### Upsert Methods
 
 ```typescript
-// Upsert single record
-upsert(
-  data: Partial<TEntity>,
-  options: {
-    conflictTarget: string[];
-    update: string[] | Partial<TEntity>;
-  }
-): Promise<TEntity>
-
 // Upsert multiple records
-upsertMany(
+upsertBulk(
   data: Partial<TEntity>[],
   options: {
-    conflictTarget: string[];
-    update: string[] | Partial<TEntity>;
+    primaryKey: string[];
+    updateColumns: string[];
   }
-): Promise<TEntity[]>
+): FluentUpsert<TEntity>
+
+// With returning
+upsertBulk(data, options).returning(): Promise<TEntity[]>
+upsertBulk(data, options).returning(selector): Promise<Partial<TEntity>[]>
 ```
 
-### Delete Methods
+### Delete Methods (Fluent API)
 
 ```typescript
-// Delete with count
-delete(): Promise<number>
+// Fluent delete: where -> delete -> optional returning
+db.table
+  .where(condition)
+  .delete(): FluentDelete<TEntity>
 
-// Delete with returning
-deleteReturning(): Promise<TEntity[]>
+// With returning
+db.table
+  .where(condition)
+  .delete()
+  .returning(): Promise<TEntity[]>
+
+db.table
+  .where(condition)
+  .delete()
+  .returning(selector): Promise<Partial<TEntity>[]>
+
+// Delete all (dangerous!)
+db.table.delete(): FluentDelete<TEntity>
 ```
 
 ## See Also

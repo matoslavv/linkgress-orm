@@ -436,6 +436,29 @@ model.entity(Post, entity => {
 });
 ```
 
+### Unique Index
+
+Use `.isUnique()` to create a unique constraint index:
+
+```typescript
+model.entity(Product, entity => {
+  // Unique composite index - enforces uniqueness across multiple columns
+  entity.hasIndex('ix_product_unique', e => [
+    e.productSource,
+    e.productSubtype,
+    e.entityId,
+  ]).isUnique();
+
+  // Regular non-unique index for query optimization
+  entity.hasIndex('ix_product_name', e => [e.name]);
+});
+```
+
+**Use Cases for Unique Indexes:**
+- Enforce uniqueness on multiple columns (composite unique constraint)
+- Create unique constraints without using `.isUnique()` on individual properties
+- Prevent duplicate combinations (e.g., unique product per source/type/entity)
+
 ### Multiple Indexes
 
 ```typescript

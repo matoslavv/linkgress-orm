@@ -302,7 +302,7 @@ const stats = await db.users
 All query conditions are fully type-checked:
 
 ```typescript
-import { eq, gt, like, and, or } from 'linkgress-orm';
+import { eq, gt, like, and, or, coalesce } from 'linkgress-orm';
 
 const results = await db.users
   .where(u => and(
@@ -311,7 +311,17 @@ const results = await db.users
     like(u.username, '%alice%')  // Type-checked: must be string
   ))
   .toList();
+
+// Use coalesce for null-safe defaults
+const usersWithAge = await db.users
+  .select(u => ({
+    username: u.username,
+    effectiveAge: coalesce(u.age, 0),  // Returns 0 if age is null
+  }))
+  .toList();
 ```
+
+**Available Operators:** `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `and`, `or`, `not`, `like`, `ilike`, `inArray`, `isNull`, `isNotNull`, `coalesce`, `jsonbSelect`, `jsonbSelectText`, `flagHas`, `flagHasAll`, `flagHasAny`, `flagHasNone`
 
 ## Next Steps
 
