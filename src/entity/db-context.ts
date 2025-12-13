@@ -1529,7 +1529,10 @@ export interface EntityCollectionQuery<TEntity extends DbEntity> {
   toStringList(asName?: string): string[];
 
   // Standard list result
-  toList(asName: string): TEntity[];
+  toList(asName?: string): TEntity[];
+
+  // Single item result
+  firstOrDefault(asName?: string): TEntity | null;
 }
 
 export interface EntityCollectionQueryWithSelect<TEntity extends DbEntity, TSelection> {
@@ -1554,7 +1557,10 @@ export interface EntityCollectionQueryWithSelect<TEntity extends DbEntity, TSele
   toStringList(asName?: string): string[];
 
   // Standard list result
-  toList(asName: string): TSelection[];
+  toList(asName?: string): TSelection[];
+
+  // Single item result
+  firstOrDefault(asName?: string): TSelection | null;
 }
 
 /**

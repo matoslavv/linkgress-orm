@@ -24,6 +24,7 @@ const enum FieldType {
   FIELD_REF_MAPPER = 6,
   FIELD_REF_NO_MAPPER = 7,
   SIMPLE = 8,
+  COLLECTION_SINGLE = 9,  // firstOrDefault() - single item or null
 }
 
 /**
@@ -2024,6 +2025,9 @@ export class SelectQueryBuilder<TSelection> {
     } else if (builderAny.flattenResultType) {
       // Array aggregation
       return [];
+    } else if (builder.isSingleResult()) {
+      // firstOrDefault() - single item
+      return null;
     } else {
       // JSONB aggregation (object array)
       return [];
@@ -3189,8 +3193,16 @@ export class SelectQueryBuilder<TSelection> {
           });
         } else {
           const isArrayAgg = value && typeof value === 'object' && 'isArrayAggregation' in value && value.isArrayAggregation();
+          const isSingleResult = value instanceof CollectionQueryBuilder && value.isSingleResult();
           if (isArrayAgg) {
             fieldConfigs.push({ key, type: FieldType.COLLECTION_ARRAY, value });
+          } else if (isSingleResult) {
+            fieldConfigs.push({
+              key,
+              type: FieldType.COLLECTION_SINGLE,
+              value,
+              collectionBuilder: value
+            });
           } else {
             fieldConfigs.push({
               key,
@@ -3300,6 +3312,17 @@ export class SelectQueryBuilder<TSelection> {
               result[key] = this.transformCollectionItems(items, config.collectionBuilder);
             } else {
               result[key] = items;
+            }
+            break;
+          }
+          case FieldType.COLLECTION_SINGLE: {
+            // firstOrDefault() - return first item or null
+            const items = rawValue || [];
+            if (config.collectionBuilder && items.length > 0) {
+              const transformedItems = this.transformCollectionItems(items, config.collectionBuilder);
+              result[key] = transformedItems[0] ?? null;
+            } else {
+              result[key] = items[0] ?? null;
             }
             break;
           }
@@ -4268,6 +4291,19 @@ export class CollectionQueryBuilder<TItem = any> {
   }
 
   /**
+   * Get first item from collection or null if empty
+   * Automatically applies LIMIT 1 and returns a single item instead of array
+   */
+  firstOrDefault(name?: string): CollectionResult<TItem | null> {
+    if (name) {
+      this.asName = name;
+    }
+    this.limitValue = 1;
+    this.isMarkedAsList = false;  // Single item, not a list
+    return this as any as CollectionResult<TItem | null>;
+  }
+
+  /**
    * Get target table schema
    */
   getTargetTableSchema(): TableSchema | undefined {
@@ -4286,6 +4322,13 @@ export class CollectionQueryBuilder<TItem = any> {
    */
   isScalarAggregation(): boolean {
     return this.aggregationType !== undefined;
+  }
+
+  /**
+   * Check if this is a single item result (firstOrDefault)
+   */
+  isSingleResult(): boolean {
+    return !this.isMarkedAsList && this.limitValue === 1;
   }
 
   /**

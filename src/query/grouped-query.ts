@@ -647,6 +647,13 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
   }
 
   /**
+   * Execute query and return first result or null (alias for first)
+   */
+  async firstOrDefault(): Promise<ResolveFieldRefs<TSelection> | null> {
+    return this.first();
+  }
+
+  /**
    * Execute query and return first result or throw
    */
   async firstOrThrow(): Promise<ResolveFieldRefs<TSelection>> {
@@ -1759,6 +1766,13 @@ export class GroupedJoinedQueryBuilder<TSelection, TLeft, TRight> {
   async first(): Promise<ResolveFieldRefs<TSelection> | null> {
     const results = await this.limit(1).toList();
     return results.length > 0 ? results[0] : null;
+  }
+
+  /**
+   * Execute query and return first result or null (alias for first)
+   */
+  async firstOrDefault(): Promise<ResolveFieldRefs<TSelection> | null> {
+    return this.first();
   }
 
   /**
