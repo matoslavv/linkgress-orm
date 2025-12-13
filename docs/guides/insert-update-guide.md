@@ -121,6 +121,33 @@ console.log(results);
 // [{ id: 1, age: 30 }]
 ```
 
+### Update with Affected Count
+
+Use `.affectedCount()` to get the number of rows affected without returning the actual records:
+
+```typescript
+// Get the count of updated rows
+const count = await db.users
+  .where(u => eq(u.isActive, true))
+  .update({ lastLogin: new Date() })
+  .affectedCount();
+
+console.log(`Updated ${count} users`);
+// Updated 42 users
+
+// Update all records and get count
+const totalUpdated = await db.users
+  .update({ isActive: false })
+  .affectedCount();
+
+console.log(`Deactivated ${totalUpdated} users`);
+```
+
+**When to use:**
+- When you only need to know how many rows were affected
+- More efficient than `.returning()` when you don't need the actual data
+- Useful for logging, metrics, or conditional logic based on affected count
+
 ## Upsert Operations
 
 Upsert (INSERT ... ON CONFLICT) inserts a record or updates it if it already exists.
@@ -246,6 +273,33 @@ const deletedIds = await db.users
 console.log(deletedIds);
 // [{ id: 5, username: 'inactive_user' }, ...]
 ```
+
+### Delete with Affected Count
+
+Use `.affectedCount()` to get the number of rows deleted without returning the actual records:
+
+```typescript
+// Get the count of deleted rows
+const count = await db.users
+  .where(u => eq(u.isActive, false))
+  .delete()
+  .affectedCount();
+
+console.log(`Deleted ${count} inactive users`);
+// Deleted 15 inactive users
+
+// Delete all records and get count
+const totalDeleted = await db.users
+  .delete()
+  .affectedCount();
+
+console.log(`Deleted ${totalDeleted} users from table`);
+```
+
+**When to use:**
+- When you only need to know how many rows were deleted
+- More efficient than `.returning()` when you don't need the actual data
+- Useful for logging, cleanup operations, or conditional logic
 
 ### Delete All Records
 
@@ -467,7 +521,7 @@ insertBulk(data: Partial<TEntity>[]): FluentInsertMany<TEntity>
 ### Update Methods (Fluent API)
 
 ```typescript
-// Fluent update: where -> update -> optional returning
+// Fluent update: where -> update -> optional returning/affectedCount
 db.table
   .where(condition)
   .update(data: Partial<TEntity>): FluentQueryUpdate<TEntity>
@@ -482,6 +536,12 @@ db.table
   .where(condition)
   .update(data)
   .returning(selector): Promise<Partial<TEntity>[]>
+
+// With affected count
+db.table
+  .where(condition)
+  .update(data)
+  .affectedCount(): Promise<number>
 ```
 
 ### Upsert Methods
@@ -504,7 +564,7 @@ upsertBulk(data, options).returning(selector): Promise<Partial<TEntity>[]>
 ### Delete Methods (Fluent API)
 
 ```typescript
-// Fluent delete: where -> delete -> optional returning
+// Fluent delete: where -> delete -> optional returning/affectedCount
 db.table
   .where(condition)
   .delete(): FluentDelete<TEntity>
@@ -520,8 +580,15 @@ db.table
   .delete()
   .returning(selector): Promise<Partial<TEntity>[]>
 
+// With affected count
+db.table
+  .where(condition)
+  .delete()
+  .affectedCount(): Promise<number>
+
 // Delete all (dangerous!)
 db.table.delete(): FluentDelete<TEntity>
+db.table.delete().affectedCount(): Promise<number>
 ```
 
 ## See Also

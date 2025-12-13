@@ -2081,7 +2081,7 @@ export class SelectQueryBuilder<TSelection> {
     const queryBuilder = this;
 
     const executeDelete = async <TResult>(
-      returning?: undefined | true | ((row: TSelection) => TResult)
+      returning?: undefined | true | ((row: TSelection) => TResult) | 'count'
     ): Promise<any> => {
       // Build WHERE clause
       if (!queryBuilder.whereCond) {
@@ -2091,8 +2091,10 @@ export class SelectQueryBuilder<TSelection> {
       const condBuilder = new ConditionBuilder();
       const { sql: whereSql, params: whereParams } = condBuilder.build(queryBuilder.whereCond, 1);
 
-      // Build RETURNING clause
-      const returningClause = queryBuilder.buildDeleteReturningClause(returning);
+      // Build RETURNING clause (not needed for count-only)
+      const returningClause = returning !== 'count'
+        ? queryBuilder.buildDeleteReturningClause(returning)
+        : undefined;
 
       const qualifiedTableName = queryBuilder.getQualifiedTableName(queryBuilder.schema.name, queryBuilder.schema.schema);
       let sql = `DELETE FROM ${qualifiedTableName} WHERE ${whereSql}`;
@@ -2103,6 +2105,11 @@ export class SelectQueryBuilder<TSelection> {
       const result = queryBuilder.executor
         ? await queryBuilder.executor.query(sql, whereParams)
         : await queryBuilder.client.query(sql, whereParams);
+
+      // Return affected count
+      if (returning === 'count') {
+        return result.rowCount ?? 0;
+      }
 
       if (!returningClause) {
         return undefined;
@@ -2117,6 +2124,16 @@ export class SelectQueryBuilder<TSelection> {
         onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null
       ): PromiseLike<TResult1 | TResult2> {
         return executeDelete(undefined).then(onfulfilled, onrejected);
+      },
+      affectedCount() {
+        return {
+          then<T1 = number, T2 = never>(
+            onfulfilled?: ((value: number) => T1 | PromiseLike<T1>) | null,
+            onrejected?: ((reason: any) => T2 | PromiseLike<T2>) | null
+          ): PromiseLike<T1 | T2> {
+            return executeDelete('count').then(onfulfilled, onrejected);
+          }
+        };
       },
       returning<TResult>(selector?: (row: TSelection) => TResult) {
         const returningConfig = selector ?? true;
@@ -2155,7 +2172,7 @@ export class SelectQueryBuilder<TSelection> {
     const queryBuilder = this;
 
     const executeUpdate = async <TResult>(
-      returning?: undefined | true | ((row: TSelection) => TResult)
+      returning?: undefined | true | ((row: TSelection) => TResult) | 'count'
     ): Promise<any> => {
       // Build WHERE clause
       if (!queryBuilder.whereCond) {
@@ -2188,8 +2205,10 @@ export class SelectQueryBuilder<TSelection> {
       const { sql: whereSql, params: whereParams } = condBuilder.build(queryBuilder.whereCond, paramIndex);
       values.push(...whereParams);
 
-      // Build RETURNING clause
-      const returningClause = queryBuilder.buildDeleteReturningClause(returning);
+      // Build RETURNING clause (not needed for count-only)
+      const returningClause = returning !== 'count'
+        ? queryBuilder.buildDeleteReturningClause(returning)
+        : undefined;
 
       const qualifiedTableName = queryBuilder.getQualifiedTableName(queryBuilder.schema.name, queryBuilder.schema.schema);
       let sql = `UPDATE ${qualifiedTableName} SET ${setClauses.join(', ')} WHERE ${whereSql}`;
@@ -2200,6 +2219,11 @@ export class SelectQueryBuilder<TSelection> {
       const result = queryBuilder.executor
         ? await queryBuilder.executor.query(sql, values)
         : await queryBuilder.client.query(sql, values);
+
+      // Return affected count
+      if (returning === 'count') {
+        return result.rowCount ?? 0;
+      }
 
       if (!returningClause) {
         return undefined;
@@ -2214,6 +2238,16 @@ export class SelectQueryBuilder<TSelection> {
         onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null
       ): PromiseLike<TResult1 | TResult2> {
         return executeUpdate(undefined).then(onfulfilled, onrejected);
+      },
+      affectedCount() {
+        return {
+          then<T1 = number, T2 = never>(
+            onfulfilled?: ((value: number) => T1 | PromiseLike<T1>) | null,
+            onrejected?: ((reason: any) => T2 | PromiseLike<T2>) | null
+          ): PromiseLike<T1 | T2> {
+            return executeUpdate('count').then(onfulfilled, onrejected);
+          }
+        };
       },
       returning<TResult>(selector?: (row: TSelection) => TResult) {
         const returningConfig = selector ?? true;

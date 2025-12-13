@@ -584,6 +584,8 @@ export interface FluentUpsert<TEntity extends DbEntity> extends PromiseLike<void
  * Used with db.table.where(...).delete()
  */
 export interface FluentDelete<TSelection> extends PromiseLike<void> {
+  /** Return the number of deleted rows */
+  affectedCount(): PromiseLike<number>;
   /** Return all columns from the deleted rows */
   returning(): PromiseLike<TSelection[]>;
   /** Return selected columns from the deleted rows */
@@ -595,6 +597,8 @@ export interface FluentDelete<TSelection> extends PromiseLike<void> {
  * Used with db.table.where(...).update(data)
  */
 export interface FluentQueryUpdate<TSelection> extends PromiseLike<void> {
+  /** Return the number of updated rows */
+  affectedCount(): PromiseLike<number>;
   /** Return all columns from the updated rows */
   returning(): PromiseLike<TSelection[]>;
   /** Return selected columns from the updated rows */
@@ -2923,7 +2927,7 @@ export class DbEntityTable<TEntity extends DbEntity> {
     const table = this;
 
     const executeUpdate = async <TResult>(
-      returning?: undefined | true | ((entity: EntityQuery<TEntity>) => TResult)
+      returning?: undefined | true | ((entity: EntityQuery<TEntity>) => TResult) | 'count'
     ): Promise<any> => {
       const schema = table._getSchema();
       const executor = table._getExecutor();
@@ -2949,8 +2953,10 @@ export class DbEntityTable<TEntity extends DbEntity> {
 
       // No WHERE clause - updates all records
 
-      // Build RETURNING clause
-      const returningClause = table.buildReturningClause(returning);
+      // Build RETURNING clause (not needed for count-only)
+      const returningClause = returning !== 'count'
+        ? table.buildReturningClause(returning)
+        : undefined;
 
       const qualifiedTableName = table._getQualifiedTableName();
       let sql = `UPDATE ${qualifiedTableName} SET ${setClauses.join(', ')}`;
@@ -2961,6 +2967,11 @@ export class DbEntityTable<TEntity extends DbEntity> {
       const result = executor
         ? await executor.query(sql, values)
         : await client.query(sql, values);
+
+      // Return affected count
+      if (returning === 'count') {
+        return result.rowCount ?? 0;
+      }
 
       if (!returningClause) {
         return undefined;
@@ -2975,6 +2986,16 @@ export class DbEntityTable<TEntity extends DbEntity> {
         onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null
       ): PromiseLike<TResult1 | TResult2> {
         return executeUpdate(undefined).then(onfulfilled, onrejected);
+      },
+      affectedCount() {
+        return {
+          then<T1 = number, T2 = never>(
+            onfulfilled?: ((value: number) => T1 | PromiseLike<T1>) | null,
+            onrejected?: ((reason: any) => T2 | PromiseLike<T2>) | null
+          ): PromiseLike<T1 | T2> {
+            return executeUpdate('count').then(onfulfilled, onrejected);
+          }
+        };
       },
       returning<TResult>(selector?: (row: UnwrapDbColumns<TEntity>) => TResult) {
         const returningConfig = selector ?? true;
@@ -3280,12 +3301,16 @@ WHERE ${whereClause}`.trim();
 
     const table = this;
 
-    const executeDelete = async (returningConfig?: true | ((row: any) => any)): Promise<any> => {
-      if (!returningConfig) {
+    const executeDelete = async (returningConfig?: true | ((row: any) => any) | 'count'): Promise<any> => {
+      if (!returningConfig || returningConfig === 'count') {
         const sql = baseSql;
         const result = executor
           ? await executor.query(sql, [])
           : await client.query(sql, []);
+
+        if (returningConfig === 'count') {
+          return result.rowCount ?? 0;
+        }
         return;
       }
 
@@ -3305,6 +3330,13 @@ WHERE ${whereClause}`.trim();
     const fluent: FluentDelete<UnwrapDbColumns<TEntity>> = {
       then: (resolve, reject) => {
         return executeDelete().then(resolve, reject);
+      },
+      affectedCount: () => {
+        return {
+          then: (resolve: any, reject: any) => {
+            return executeDelete('count').then(resolve, reject);
+          }
+        };
       },
       returning: ((selector?: (row: UnwrapDbColumns<TEntity>) => any) => {
         const returningConfig = selector ?? true;

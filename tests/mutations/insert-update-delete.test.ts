@@ -176,6 +176,48 @@ describe('Insert, Update, Delete Operations', () => {
         expect(updated).toHaveLength(0);
       });
     });
+
+    test('should return affected count with affectedCount()', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // Update multiple users
+        const count = await db.users
+          .where(u => eq(u.isActive, true))
+          .update({ age: 99 })
+          .affectedCount();
+
+        expect(count).toBeGreaterThanOrEqual(2);
+        expect(typeof count).toBe('number');
+      });
+    });
+
+    test('should return 0 affected count when no records match', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        const count = await db.users
+          .where(u => eq(u.username, 'nonexistent'))
+          .update({ age: 99 })
+          .affectedCount();
+
+        expect(count).toBe(0);
+      });
+    });
+
+    test('should return affected count for table-level update (all records)', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        const totalUsers = await db.users.count();
+
+        const count = await db.users
+          .update({ age: 50 })
+          .affectedCount();
+
+        expect(count).toBe(totalUsers);
+      });
+    });
   });
 
   describe('DELETE operations', () => {
@@ -249,6 +291,53 @@ describe('Insert, Update, Delete Operations', () => {
 
         const countAfter = await db.users.count();
         expect(countAfter).toBe(countBefore);
+      });
+    });
+
+    test('should return affected count with affectedCount()', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        const countBefore = await db.users.where(u => eq(u.isActive, true)).count();
+
+        const deletedCount = await db.users
+          .where(u => eq(u.isActive, true))
+          .delete()
+          .affectedCount();
+
+        expect(deletedCount).toBe(countBefore);
+        expect(typeof deletedCount).toBe('number');
+      });
+    });
+
+    test('should return 0 affected count when no records match delete', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        const deletedCount = await db.users
+          .where(u => eq(u.username, 'nonexistent'))
+          .delete()
+          .affectedCount();
+
+        expect(deletedCount).toBe(0);
+      });
+    });
+
+    test('should return affected count for table-level delete (all records)', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        const totalUsers = await db.users.count();
+
+        const deletedCount = await db.users
+          .delete()
+          .affectedCount();
+
+        expect(deletedCount).toBe(totalUsers);
+
+        // Verify all users deleted
+        const remaining = await db.users.count();
+        expect(remaining).toBe(0);
       });
     });
 
