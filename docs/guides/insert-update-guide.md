@@ -46,7 +46,7 @@ console.log(user); // { id: 2, username: 'bob' }
 Insert multiple records in a single operation:
 
 ```typescript
-const users = await db.users.insertMany([
+const users = await db.users.insertBulk([
   { username: 'alice', email: 'alice@example.com' },
   { username: 'bob', email: 'bob@example.com' },
   { username: 'charlie', email: 'charlie@example.com' }
@@ -296,7 +296,7 @@ await db.transaction(async (tx) => {
   });
 
   // Insert related posts
-  await tx.posts.insertMany([
+  await tx.posts.insertBulk([
     { userId: user.id, title: 'First Post', content: 'Hello World' },
     { userId: user.id, title: 'Second Post', content: 'More content' }
   ]);
@@ -318,7 +318,7 @@ for (const user of users) {
 }
 
 // ✅ Fast: Single round trip
-await db.users.insertMany(users);
+await db.users.insertBulk(users);
 ```
 
 ### Batch Size
@@ -331,7 +331,7 @@ const users = [...]; // Large array of users
 
 for (let i = 0; i < users.length; i += batchSize) {
   const batch = users.slice(i, i + batchSize);
-  await db.users.insertMany(batch);
+  await db.users.insertBulk(batch);
 }
 ```
 
@@ -461,7 +461,6 @@ insert(data: Partial<TEntity>).returning(): Promise<TEntity>
 insert(data: Partial<TEntity>).returning(selector): Promise<Partial<TEntity>>
 
 // Insert multiple records
-insertMany(data: Partial<TEntity>[]): FluentInsertMany<TEntity>
 insertBulk(data: Partial<TEntity>[]): FluentInsertMany<TEntity>
 ```
 

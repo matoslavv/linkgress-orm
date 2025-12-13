@@ -1138,73 +1138,6 @@ export class TableAccessor<TBuilder extends TableBuilder<any>> {
   }
 
   /**
-   * Bulk insert multiple rows (simple version, kept for compatibility)
-   */
-  async insertMany(dataArray: Partial<InferTableType<TableSchema>>[]): Promise<InferTableType<TableSchema>[]> {
-    if (dataArray.length === 0) {
-      return [];
-    }
-
-    // Extract all unique column names from all data objects
-    const columnSet = new Set<string>();
-    for (const data of dataArray) {
-      for (const key of Object.keys(data)) {
-        const column = this.schema.columns[key];
-        if (column) {
-          const config = column.build();
-          if (!config.autoIncrement) {
-            columnSet.add(key);
-          }
-        }
-      }
-    }
-
-    const columns = Array.from(columnSet);
-    const values: any[] = [];
-    const valuePlaceholders: string[] = [];
-    let paramIndex = 1;
-
-    // Build placeholders for each row
-    for (const data of dataArray) {
-      const rowPlaceholders: string[] = [];
-      for (const key of columns) {
-        const value = (data as any)[key];
-        const column = this.schema.columns[key as string];
-        const config = column.build();
-        // Apply toDriver mapper if present
-        const mappedValue = config.mapper
-          ? config.mapper.toDriver(value !== undefined ? value : null)
-          : (value !== undefined ? value : null);
-        values.push(mappedValue);
-        rowPlaceholders.push(`$${paramIndex++}`);
-      }
-      valuePlaceholders.push(`(${rowPlaceholders.join(', ')})`);
-    }
-
-    const columnNames = columns.map(key => {
-      const column = this.schema.columns[key as string];
-      const config = column.build();
-      return `"${config.name}"`;
-    });
-
-    const returningColumns = Object.entries(this.schema.columns)
-      .map(([_, col]) => `"${(col as any).build().name}"`)
-      .join(', ');
-
-    const qualifiedTableName = getQualifiedTableName(this.schema);
-    const sql = `
-      INSERT INTO ${qualifiedTableName} (${columnNames.join(', ')})
-      VALUES ${valuePlaceholders.join(', ')}
-      RETURNING ${returningColumns}
-    `;
-
-    const result = this.executor
-      ? await this.executor.query(sql, values)
-      : await this.client.query(sql, values);
-    return result.rows as InferTableType<TableSchema>[];
-  }
-
-  /**
    * Insert with conflict resolution (upsert)
    */
   onConflictDoNothing(): InsertBuilder<TableSchema> {
@@ -2509,26 +2442,6 @@ export class DbEntityTable<TEntity extends DbEntity> {
         };
       }
     };
-  }
-
-  /**
-   * Insert multiple records
-   * Returns a fluent builder that can be awaited directly or chained with .returning()
-   *
-   * @example
-   * ```typescript
-   * // No returning (default) - returns void
-   * await db.users.insertMany([{ username: 'alice' }, { username: 'bob' }]);
-   *
-   * // With returning() - returns full entities
-   * const users = await db.users.insertMany([{ username: 'alice' }]).returning();
-   *
-   * // With returning(selector) - returns selected columns
-   * const results = await db.users.insertMany([{ username: 'alice' }]).returning(u => ({ id: u.id }));
-   * ```
-   */
-  insertMany(data: InsertData<TEntity>[]): FluentInsertMany<TEntity> {
-    return this.insertBulk(data);
   }
 
   /**

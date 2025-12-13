@@ -63,51 +63,6 @@ describe('Returning Clause (Fluent API)', () => {
     });
   });
 
-  describe('insertMany', () => {
-    test('should return void by default', async () => {
-      await withDatabase(async (db) => {
-        const result = await db.users.insertMany([
-          { username: 'batch1', email: 'batch1@test.com', isActive: true },
-          { username: 'batch2', email: 'batch2@test.com', isActive: false },
-        ]);
-
-        expect(result).toBeUndefined();
-
-        // Verify records were inserted
-        const users = await db.users.where(u => eq(u.username, 'batch1')).toList();
-        expect(users.length).toBe(1);
-      });
-    });
-
-    test('should return full entities with .returning()', async () => {
-      await withDatabase(async (db) => {
-        const users = await db.users.insertMany([
-          { username: 'batch3', email: 'batch3@test.com', isActive: true },
-          { username: 'batch4', email: 'batch4@test.com', isActive: false },
-        ]).returning();
-
-        expect(users.length).toBe(2);
-        expect(users[0]).toHaveProperty('id');
-        expect(users[0]).toHaveProperty('username');
-        expect(users[0]).toHaveProperty('email');
-      });
-    });
-
-    test('should return selected columns with .returning(selector)', async () => {
-      await withDatabase(async (db) => {
-        const results = await db.users.insertMany([
-          { username: 'batch5', email: 'batch5@test.com', isActive: true },
-          { username: 'batch6', email: 'batch6@test.com', isActive: true },
-        ]).returning(u => ({ id: u.id, username: u.username }));
-
-        expect(results.length).toBe(2);
-        expect(results[0]).toHaveProperty('id');
-        expect(results[0]).toHaveProperty('username');
-        expect(results[0]).not.toHaveProperty('email');
-      });
-    });
-  });
-
   describe('insertBulk', () => {
     test('should return void by default', async () => {
       await withDatabase(async (db) => {
@@ -454,9 +409,9 @@ describe('Returning Clause (Fluent API)', () => {
       });
     });
 
-    test('insertMany without returning should return undefined, not array', async () => {
+    test('insertBulk without returning should return undefined, not array', async () => {
       await withDatabase(async (db) => {
-        const result = await db.users.insertMany([
+        const result = await db.users.insertBulk([
           { username: 'void1', email: 'void1@test.com', isActive: true },
           { username: 'void2', email: 'void2@test.com', isActive: true },
         ]);
@@ -568,14 +523,14 @@ describe('Returning Clause (Fluent API)', () => {
   describe('Edge cases', () => {
     test('empty array insert should return void by default', async () => {
       await withDatabase(async (db) => {
-        const result = await db.users.insertMany([]);
+        const result = await db.users.insertBulk([]);
         expect(result).toBeUndefined();
       });
     });
 
     test('empty array insert with .returning() should return empty array', async () => {
       await withDatabase(async (db) => {
-        const result = await db.users.insertMany([]).returning();
+        const result = await db.users.insertBulk([]).returning();
         expect(result).toEqual([]);
       });
     });
