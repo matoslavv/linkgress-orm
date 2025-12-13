@@ -832,7 +832,8 @@ export class DbSchemaManager {
       }
 
       // For newly created tables, we need to add their FK constraints in phase 2
-      // Extract FK operations from create_table schemas
+      // and their indexes in phase 3
+      // Extract FK and index operations from create_table schemas
       for (const tableName of tablesToCreate) {
         const schema = this.schemaRegistry.get(tableName);
         if (schema) {
@@ -861,6 +862,18 @@ export class DbSchemaManager {
                 }
               });
             }
+          }
+
+          // Add indexes for newly created tables to phase 3
+          const indexes = schema.indexes || [];
+          for (const index of indexes) {
+            phase3Ops.push({
+              type: 'create_index',
+              tableName,
+              indexName: index.name,
+              columns: index.columns,
+              isUnique: index.isUnique
+            });
           }
         }
       }
