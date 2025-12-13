@@ -335,6 +335,7 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
       }
 
       if (relConfig.type === 'many') {
+        // Non-enumerable to prevent Object.entries triggering getters (avoids stack overflow)
         Object.defineProperty(mock, relName, {
           get: () => {
             return new CollectionQueryBuilder(
@@ -346,11 +347,13 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
               this.schemaRegistry  // Pass schema registry for nested navigation resolution
             );
           },
-          enumerable: true,
+          enumerable: false,
           configurable: true,
         });
       } else {
         // Single reference navigation (many-to-one, one-to-one)
+        // Non-enumerable to prevent Object.entries triggering getters (avoids stack overflow
+        // with circular relations like User->Posts->User)
         Object.defineProperty(mock, relName, {
           get: () => {
             const refBuilder = new ReferenceQueryBuilder(
@@ -364,7 +367,7 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
             );
             return refBuilder.createMockTargetRow();
           },
-          enumerable: true,
+          enumerable: false,
           configurable: true,
         });
       }
@@ -586,6 +589,7 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
 
       if (relConfig.type === 'many') {
         // Collection navigation
+        // Non-enumerable to prevent Object.entries triggering getters (avoids stack overflow)
         Object.defineProperty(mock, relName, {
           get: () => {
             return new CollectionQueryBuilder(
@@ -596,11 +600,12 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
               targetSchema
             );
           },
-          enumerable: true,
+          enumerable: false,
           configurable: true,
         });
       } else {
         // Single reference navigation
+        // Non-enumerable to prevent Object.entries triggering getters (avoids stack overflow)
         Object.defineProperty(mock, relName, {
           get: () => {
             const refBuilder = new ReferenceQueryBuilder(
@@ -613,7 +618,7 @@ export class QueryBuilder<TSchema extends TableSchema, TRow = any> {
             );
             return refBuilder.createMockTargetRow();
           },
-          enumerable: true,
+          enumerable: false,
           configurable: true,
         });
       }
@@ -1233,6 +1238,7 @@ export class SelectQueryBuilder<TSelection> {
 
       if (relConfig.type === 'many') {
         // Collection navigation
+        // Non-enumerable to prevent Object.entries triggering getters (avoids stack overflow)
         Object.defineProperty(mock, relName, {
           get: () => {
             return new CollectionQueryBuilder(
@@ -1243,11 +1249,12 @@ export class SelectQueryBuilder<TSelection> {
               targetSchema
             );
           },
-          enumerable: true,
+          enumerable: false,
           configurable: true,
         });
       } else {
         // Single reference navigation
+        // Non-enumerable to prevent Object.entries triggering getters (avoids stack overflow)
         Object.defineProperty(mock, relName, {
           get: () => {
             const refBuilder = new ReferenceQueryBuilder(
@@ -1260,7 +1267,7 @@ export class SelectQueryBuilder<TSelection> {
             );
             return refBuilder.createMockTargetRow();
           },
-          enumerable: true,
+          enumerable: false,
           configurable: true,
         });
       }
@@ -2445,6 +2452,7 @@ export class SelectQueryBuilder<TSelection> {
       }
 
       if (relConfig.type === 'many') {
+        // Non-enumerable to prevent Object.entries triggering getters (avoids stack overflow)
         Object.defineProperty(mock, relName, {
           get: () => {
             return new CollectionQueryBuilder(
@@ -2456,11 +2464,12 @@ export class SelectQueryBuilder<TSelection> {
               this.schemaRegistry  // Pass schema registry for nested resolution
             );
           },
-          enumerable: true,
+          enumerable: false,
           configurable: true,
         });
       } else {
         // For single reference (many-to-one), create a ReferenceQueryBuilder
+        // Non-enumerable to prevent Object.entries triggering getters (avoids stack overflow)
         Object.defineProperty(mock, relName, {
           get: () => {
             const refBuilder = new ReferenceQueryBuilder(
@@ -2475,7 +2484,7 @@ export class SelectQueryBuilder<TSelection> {
             // Return a mock object that exposes the target table's columns
             return refBuilder.createMockTargetRow();
           },
-          enumerable: true,
+          enumerable: false,
           configurable: true,
         });
       }
@@ -3967,6 +3976,7 @@ export class ReferenceQueryBuilder<TItem = any> {
 
           if (relConfig.type === 'many') {
             // Collection navigation
+            // Non-enumerable to prevent Object.entries triggering getters (avoids stack overflow)
             Object.defineProperty(mock, relName, {
               get: () => {
                 const fk = relConfig.foreignKey || relConfig.foreignKeys?.[0] || '';
@@ -3979,11 +3989,13 @@ export class ReferenceQueryBuilder<TItem = any> {
                   this.schemaRegistry  // Pass schema registry for nested resolution
                 );
               },
-              enumerable: true,
+              enumerable: false,
               configurable: true,
             });
           } else {
             // Reference navigation
+            // Non-enumerable to prevent Object.entries triggering getters (avoids stack overflow
+            // with circular relations like User->Posts->User)
             Object.defineProperty(mock, relName, {
               get: () => {
                 const refBuilder = new ReferenceQueryBuilder(
@@ -3997,7 +4009,7 @@ export class ReferenceQueryBuilder<TItem = any> {
                 );
                 return refBuilder.createMockTargetRow();
               },
-              enumerable: true,
+              enumerable: false,
               configurable: true,
             });
           }
@@ -4153,6 +4165,7 @@ export class CollectionQueryBuilder<TItem = any> {
         for (const [relName, relConfig] of Object.entries(this.targetTableSchema.relations)) {
           if (relConfig.type === 'many') {
             // Collection navigation
+            // Non-enumerable to prevent Object.entries triggering getters (avoids stack overflow)
             Object.defineProperty(mock, relName, {
               get: () => {
                 // Don't call build() - it returns schema without relations
@@ -4166,11 +4179,12 @@ export class CollectionQueryBuilder<TItem = any> {
                   this.schemaRegistry  // Pass schema registry for nested resolution
                 );
               },
-              enumerable: true,
+              enumerable: false,
               configurable: true,
             });
           } else {
             // Reference navigation
+            // Non-enumerable to prevent Object.entries triggering getters (avoids stack overflow)
             Object.defineProperty(mock, relName, {
               get: () => {
                 // Don't call build() - it returns schema without relations
@@ -4186,7 +4200,7 @@ export class CollectionQueryBuilder<TItem = any> {
                 );
                 return refBuilder.createMockTargetRow();
               },
-              enumerable: true,
+              enumerable: false,
               configurable: true,
             });
           }
