@@ -141,13 +141,13 @@ describe('Mixed Schema Support in AppDatabase', () => {
       }).returning();
 
       // Update the user
-      const updated = await db.schemaUsers.update(
-        {
+      const updated = await db.schemaUsers
+        .where(u => eq(u.id, user.id))
+        .update({
           username: 'updateduser',
           isActive: false,
-        },
-        u => eq(u.id, user.id)
-      ).returning();
+        })
+        .returning();
 
       expect(updated).toHaveLength(1);
       expect(updated[0].username).toBe('updateduser');
@@ -162,7 +162,7 @@ describe('Mixed Schema Support in AppDatabase', () => {
       expect(found?.isActive).toBe(false);
 
       // Delete the user
-      await db.schemaUsers.delete(u => eq(u.id, user.id));
+      await db.schemaUsers.where(u => eq(u.id, user.id)).delete();
 
       // Verify deletion
       const notFound = await db.schemaUsers
@@ -232,7 +232,7 @@ describe('Mixed Schema Support in AppDatabase', () => {
       expect(postsBefore).toHaveLength(2);
 
       // Delete the user (should cascade delete posts)
-      await db.schemaUsers.delete(u => eq(u.id, user.id));
+      await db.schemaUsers.where(u => eq(u.id, user.id)).delete();
 
       // Verify posts were cascade deleted
       const postsAfter = await db.schemaPosts

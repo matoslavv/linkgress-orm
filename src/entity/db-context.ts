@@ -2903,26 +2903,15 @@ export class DbEntityTable<TEntity extends DbEntity> {
   }
 
   /**
-   * Update records matching condition
+   * Update all records in the table
    * Returns a fluent builder that can be awaited directly or chained with .returning()
    *
-   * @example
-   * ```typescript
-   * // No returning (default) - returns void
-   * await db.users.update({ age: 30 }, u => eq(u.id, 1));
-   *
-   * // With returning() - returns full entities
-   * const users = await db.users.update({ age: 30 }, u => eq(u.id, 1)).returning();
-   *
-   * // With returning(selector) - returns selected columns
-   * const results = await db.users.update({ age: 30 }, u => eq(u.id, 1))
-   *   .returning(u => ({ id: u.id, age: u.age }));
-   * ```
+   * Usage:
+   *   await db.users.update({ age: 30 }) // Update all
+   *   await db.users.where(u => eq(u.id, 1)).update({ age: 30 }) // Update with condition
+   *   const updated = await db.users.where(u => eq(u.id, 1)).update({ age: 30 }).returning()
    */
-  update(
-    data: Partial<InsertData<TEntity>>,
-    condition: (entity: EntityQuery<TEntity>) => Condition
-  ): FluentUpdate<TEntity> {
+  update(data: Partial<InsertData<TEntity>>): FluentQueryUpdate<UnwrapDbColumns<TEntity>> {
     const table = this;
 
     const executeUpdate = async <TResult>(
@@ -2950,20 +2939,13 @@ export class DbEntityTable<TEntity extends DbEntity> {
         throw new Error('No valid columns to update');
       }
 
-      // Build WHERE clause
-      const mockEntity = table.createMockEntity();
-      const whereCondition = condition(mockEntity as any);
-
-      const condBuilder = new ConditionBuilder();
-      const { sql: whereSql, params: whereParams } = condBuilder.build(whereCondition, paramIndex);
-
-      values.push(...whereParams);
+      // No WHERE clause - updates all records
 
       // Build RETURNING clause
       const returningClause = table.buildReturningClause(returning);
 
       const qualifiedTableName = table._getQualifiedTableName();
-      let sql = `UPDATE ${qualifiedTableName} SET ${setClauses.join(', ')} WHERE ${whereSql}`;
+      let sql = `UPDATE ${qualifiedTableName} SET ${setClauses.join(', ')}`;
       if (returningClause) {
         sql += ` RETURNING ${returningClause.sql}`;
       }
@@ -2986,18 +2968,18 @@ export class DbEntityTable<TEntity extends DbEntity> {
       ): PromiseLike<TResult1 | TResult2> {
         return executeUpdate(undefined).then(onfulfilled, onrejected);
       },
-      returning<TResult>(selector?: (entity: EntityQuery<TEntity>) => TResult) {
+      returning<TResult>(selector?: (row: UnwrapDbColumns<TEntity>) => TResult) {
         const returningConfig = selector ?? true;
         return {
           then<T1 = any, T2 = never>(
             onfulfilled?: ((value: any) => T1 | PromiseLike<T1>) | null,
             onrejected?: ((reason: any) => T2 | PromiseLike<T2>) | null
           ): PromiseLike<T1 | T2> {
-            return executeUpdate(returningConfig).then(onfulfilled, onrejected);
+            return executeUpdate(returningConfig as any).then(onfulfilled, onrejected);
           }
         };
       }
-    };
+    } as FluentQueryUpdate<UnwrapDbColumns<TEntity>>;
   }
 
   /**
@@ -3271,27 +3253,62 @@ WHERE ${whereClause}`.trim();
   }
 
   /**
-   * Delete records matching condition
-   * Usage: db.users.delete(u => eq(u.id, 1))
+   * Delete all records from the table
+   * Returns a fluent builder that can be awaited directly or chained with .returning()
+   *
+   * Usage:
+   *   await db.users.delete() // Delete all
+   *   await db.users.where(u => eq(u.id, 1)).delete() // Delete with condition
+   *   const deleted = await db.users.where(u => eq(u.id, 1)).delete().returning()
    */
-  async delete(condition: (entity: EntityQuery<TEntity>) => Condition): Promise<void> {
+  delete(): FluentDelete<UnwrapDbColumns<TEntity>> {
     const schema = this._getSchema();
     const executor = this._getExecutor();
     const client = this._getClient();
-
-    // Build WHERE clause
-    const mockEntity = this.createMockEntity();
-    const whereCondition = condition(mockEntity as any);
-
-    const condBuilder = new ConditionBuilder();
-    const { sql: whereSql, params: whereParams } = condBuilder.build(whereCondition, 1);
-
     const qualifiedTableName = this._getQualifiedTableName();
-    const sql = `DELETE FROM ${qualifiedTableName} WHERE ${whereSql}`;
 
-    const result = executor
-      ? await executor.query(sql, whereParams)
-      : await client.query(sql, whereParams);
+    // No WHERE condition - deletes all records
+    const baseSql = `DELETE FROM ${qualifiedTableName}`;
+
+    const table = this;
+
+    const executeDelete = async (returningConfig?: true | ((row: any) => any)): Promise<any> => {
+      if (!returningConfig) {
+        const sql = baseSql;
+        const result = executor
+          ? await executor.query(sql, [])
+          : await client.query(sql, []);
+        return;
+      }
+
+      // Build RETURNING clause
+      const returningClause = table.buildReturningClause(returningConfig);
+      const sql = returningClause ? `${baseSql} RETURNING ${returningClause.sql}` : baseSql;
+
+      const result = executor
+        ? await executor.query(sql, [])
+        : await client.query(sql, []);
+
+      if (returningClause && result.rows) {
+        return table.mapReturningResults(result.rows, returningConfig);
+      }
+    };
+
+    const fluent: FluentDelete<UnwrapDbColumns<TEntity>> = {
+      then: (resolve, reject) => {
+        return executeDelete().then(resolve, reject);
+      },
+      returning: ((selector?: (row: UnwrapDbColumns<TEntity>) => any) => {
+        const returningConfig = selector ?? true;
+        return {
+          then: (resolve: any, reject: any) => {
+            return executeDelete(returningConfig as any).then(resolve, reject);
+          }
+        };
+      }) as any
+    };
+
+    return fluent;
   }
 
   /**

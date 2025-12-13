@@ -149,10 +149,9 @@ describe('Returning Clause (Fluent API)', () => {
       await withDatabase(async (db) => {
         const { users } = await seedTestData(db);
 
-        const result = await db.users.update(
-          { age: 99 },
-          u => eq(u.id, users.alice.id)
-        );
+        const result = await db.users
+          .where(u => eq(u.id, users.alice.id))
+          .update({ age: 99 });
 
         expect(result).toBeUndefined();
 
@@ -166,10 +165,10 @@ describe('Returning Clause (Fluent API)', () => {
       await withDatabase(async (db) => {
         const { users } = await seedTestData(db);
 
-        const updated = await db.users.update(
-          { age: 88 },
-          u => eq(u.id, users.alice.id)
-        ).returning();
+        const updated = await db.users
+          .where(u => eq(u.id, users.alice.id))
+          .update({ age: 88 })
+          .returning();
 
         expect(updated.length).toBe(1);
         expect(updated[0]).toHaveProperty('id', users.alice.id);
@@ -182,10 +181,10 @@ describe('Returning Clause (Fluent API)', () => {
       await withDatabase(async (db) => {
         const { users } = await seedTestData(db);
 
-        const results = await db.users.update(
-          { age: 77 },
-          u => eq(u.id, users.alice.id)
-        ).returning(u => ({ id: u.id, age: u.age }));
+        const results = await db.users
+          .where(u => eq(u.id, users.alice.id))
+          .update({ age: 77 })
+          .returning(u => ({ id: u.id, age: u.age }));
 
         expect(results.length).toBe(1);
         expect(results[0]).toHaveProperty('id', users.alice.id);
@@ -199,10 +198,10 @@ describe('Returning Clause (Fluent API)', () => {
         await seedTestData(db);
 
         // Update all active users
-        const results = await db.users.update(
-          { age: 50 },
-          u => eq(u.isActive, true)
-        ).returning(u => ({ id: u.id, age: u.age }));
+        const results = await db.users
+          .where(u => eq(u.isActive, true))
+          .update({ age: 50 })
+          .returning(u => ({ id: u.id, age: u.age }));
 
         expect(results.length).toBeGreaterThan(1);
         expect(results.every(r => r.age === 50)).toBe(true);
@@ -387,10 +386,9 @@ describe('Returning Clause (Fluent API)', () => {
           return originalQuery(sql, params);
         };
 
-        await db.users.update(
-          { age: 50 },
-          u => eq(u.id, users.alice.id)
-        );
+        await db.users
+          .where(u => eq(u.id, users.alice.id))
+          .update({ age: 50 });
 
         expect(queries.some(q => q.toUpperCase().includes('UPDATE'))).toBe(true);
         const updateQuery = queries.find(q => q.toUpperCase().includes('UPDATE'));
@@ -472,10 +470,9 @@ describe('Returning Clause (Fluent API)', () => {
       await withDatabase(async (db) => {
         const { users } = await seedTestData(db);
 
-        const result = await db.users.update(
-          { age: 99 },
-          u => eq(u.id, users.alice.id)
-        );
+        const result = await db.users
+          .where(u => eq(u.id, users.alice.id))
+          .update({ age: 99 });
 
         expect(result).toBeUndefined();
         expect(Array.isArray(result)).toBe(false);
@@ -554,10 +551,10 @@ describe('Returning Clause (Fluent API)', () => {
       await withDatabase(async (db) => {
         const { users } = await seedTestData(db);
 
-        const results = await db.users.update(
-          { age: 50 },
-          u => eq(u.id, users.alice.id)
-        ).returning(u => ({ age: u.age }));
+        const results = await db.users
+          .where(u => eq(u.id, users.alice.id))
+          .update({ age: 50 })
+          .returning(u => ({ age: u.age }));
 
         expect(results.length).toBe(1);
         expect(Object.keys(results[0])).toEqual(['age']);

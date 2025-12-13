@@ -123,10 +123,10 @@ describe('Insert, Update, Delete Operations', () => {
       await withDatabase(async (db) => {
         const { users } = await seedTestData(db);
 
-        const updated = await db.users.update(
-          { age: 26, isActive: false },
-          u => eq(u.id, users.alice.id)
-        ).returning();
+        const updated = await db.users
+          .where(u => eq(u.id, users.alice.id))
+          .update({ age: 26, isActive: false })
+          .returning();
 
         expect(updated).toHaveLength(1);
         expect(updated[0].age).toBe(26);
@@ -139,10 +139,10 @@ describe('Insert, Update, Delete Operations', () => {
       await withDatabase(async (db) => {
         await seedTestData(db);
 
-        const updated = await db.users.update(
-          { isActive: false },
-          u => eq(u.isActive, true)
-        ).returning();
+        const updated = await db.users
+          .where(u => eq(u.isActive, true))
+          .update({ isActive: false })
+          .returning();
 
         expect(updated.length).toBeGreaterThanOrEqual(2);
         updated.forEach(u => {
@@ -155,10 +155,10 @@ describe('Insert, Update, Delete Operations', () => {
       await withDatabase(async (db) => {
         const { users } = await seedTestData(db);
 
-        const updated = await db.users.update(
-          { age: null },
-          u => eq(u.id, users.alice.id)
-        ).returning();
+        const updated = await db.users
+          .where(u => eq(u.id, users.alice.id))
+          .update({ age: null })
+          .returning();
 
         expect(updated[0].age).toBeNull();
       });
@@ -168,10 +168,10 @@ describe('Insert, Update, Delete Operations', () => {
       await withDatabase(async (db) => {
         await seedTestData(db);
 
-        const updated = await db.users.update(
-          { age: 99 },
-          u => eq(u.username, 'nonexistent')
-        ).returning();
+        const updated = await db.users
+          .where(u => eq(u.username, 'nonexistent'))
+          .update({ age: 99 })
+          .returning();
 
         expect(updated).toHaveLength(0);
       });
@@ -185,7 +185,7 @@ describe('Insert, Update, Delete Operations', () => {
 
         const countBefore = await db.users.count();
 
-        await db.users.delete(u => eq(u.id, users.charlie.id));
+        await db.users.where(u => eq(u.id, users.charlie.id)).delete();
 
         const countAfter = await db.users.count();
         expect(countAfter).toBe(countBefore - 1);
@@ -204,7 +204,7 @@ describe('Insert, Update, Delete Operations', () => {
 
         const countBefore = await db.users.count();
 
-        await db.users.delete(u => eq(u.isActive, true));
+        await db.users.where(u => eq(u.isActive, true)).delete();
 
         const countAfter = await db.users.count();
         expect(countAfter).toBeLessThan(countBefore);
@@ -221,9 +221,9 @@ describe('Insert, Update, Delete Operations', () => {
       await withDatabase(async (db) => {
         await seedTestData(db);
 
-        await db.users.delete(u =>
+        await db.users.where(u =>
           sql`${u.age} > 30 AND ${u.isActive} = true`
-        );
+        ).delete();
 
         const remaining = await db.users.select(p => ({
           id: p.id,
@@ -245,7 +245,7 @@ describe('Insert, Update, Delete Operations', () => {
 
         const countBefore = await db.users.count();
 
-        await db.users.delete(u => eq(u.username, 'nonexistent'));
+        await db.users.where(u => eq(u.username, 'nonexistent')).delete();
 
         const countAfter = await db.users.count();
         expect(countAfter).toBe(countBefore);
@@ -257,7 +257,7 @@ describe('Insert, Update, Delete Operations', () => {
         const { users, posts } = await seedTestData(db);
 
         // Delete user should cascade to posts
-        await db.users.delete(u => eq(u.id, users.alice.id));
+        await db.users.where(u => eq(u.id, users.alice.id)).delete();
 
         // Alice's posts should be deleted
         const alicePosts = await db.posts
