@@ -4716,7 +4716,9 @@ export class CollectionQueryBuilder<TItem = any> {
           cteCounter: context.cteCounter,
         };
         const nestedResult = field.buildCTE(nestedCtx, client);
+        // Sync both counters back - cteCounter for CTE naming, paramCounter for parameter numbering
         context.cteCounter = nestedCtx.cteCounter;
+        context.paramCounter = nestedCtx.paramCounter;
 
         // For CTE/LATERAL strategy, we need to track the nested join
         // The nested aggregation needs to be joined in the outer collection's subquery
