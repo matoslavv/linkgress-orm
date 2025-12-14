@@ -963,15 +963,21 @@ export class TableAccessor<TBuilder extends TableBuilder<any>> {
       const column = this.schema.columns[key];
       if (column) {
         const config = column.build();
-        if (!config.autoIncrement) {
-          columns.push(`"${config.name}"`);
-          // Apply toDriver mapper if present
-          const mappedValue = config.mapper
-            ? config.mapper.toDriver(value)
-            : value;
-          values.push(mappedValue);
-          placeholders.push(`$${paramIndex++}`);
+        // Skip auto-increment columns
+        if (config.autoIncrement) {
+          continue;
         }
+        // Skip columns with undefined values if they have a default - let the DB use the default
+        if (value === undefined && (config.default !== undefined || config.identity)) {
+          continue;
+        }
+        columns.push(`"${config.name}"`);
+        // Apply toDriver mapper if present
+        const mappedValue = config.mapper
+          ? config.mapper.toDriver(value)
+          : value;
+        values.push(mappedValue);
+        placeholders.push(`$${paramIndex++}`);
       }
     }
 
@@ -2601,21 +2607,41 @@ export class DbEntityTable<TEntity extends DbEntity> {
     const client = this._getClient();
     const qualifiedTableName = this._getQualifiedTableName();
 
-    // Get columns from first row
-    const referenceItem = data[0];
+    // Get columns from all rows - a column is included if ANY row has a non-undefined value for it
     const columnConfigs: Array<{ propName: string; dbName: string; mapper?: any }> = [];
 
     for (const [propName, colBuilder] of Object.entries(schema.columns)) {
-      if (propName in referenceItem) {
-        const config = (colBuilder as any).build();
-        if (!config.autoIncrement || overridingSystemValue) {
-          columnConfigs.push({
-            propName,
-            dbName: config.name,
-            mapper: config.mapper,
-          });
+      const config = (colBuilder as any).build();
+      // Skip auto-increment columns (unless overriding)
+      if (config.autoIncrement && !overridingSystemValue) {
+        continue;
+      }
+
+      // Check if any row has a defined (non-undefined) value for this column
+      const hasDefinedValue = data.some(record => {
+        const value = (record as any)[propName];
+        return value !== undefined;
+      });
+
+      // If column has a default and ALL rows have undefined, skip it (let DB use default)
+      // Otherwise, include it if at least one row has a defined value
+      if (!hasDefinedValue) {
+        // All rows have undefined - if there's a default, skip the column
+        if (config.default !== undefined || config.identity) {
+          continue;
+        }
+        // No default, but column is present with undefined in data - include it (will become NULL)
+        const isPresentInAnyRow = data.some(record => propName in record);
+        if (!isPresentInAnyRow) {
+          continue;
         }
       }
+
+      columnConfigs.push({
+        propName,
+        dbName: config.name,
+        mapper: config.mapper,
+      });
     }
 
     // Build VALUES clauses

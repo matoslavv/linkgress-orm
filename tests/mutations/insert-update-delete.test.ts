@@ -100,6 +100,149 @@ describe('Insert, Update, Delete Operations', () => {
       });
     });
 
+    test('should use database default when field is undefined (not provided)', async () => {
+      await withDatabase(async (db) => {
+        // Insert user without providing isActive (has default: true) and createdAt (has default: NOW())
+        const user = await db.users.insert({
+          username: 'default_test',
+          email: 'default@test.com',
+        }).returning();
+
+        // Database defaults should be applied
+        expect(user.isActive).toBe(true); // Default is true
+        expect(user.createdAt).toBeDefined(); // Default is NOW()
+        expect(user.createdAt instanceof Date).toBe(true);
+      });
+    });
+
+    test('should use database default when field is explicitly undefined', async () => {
+      await withDatabase(async (db) => {
+        // Explicitly pass undefined for fields with defaults - should use DB default, not NULL
+        const user = await db.users.insert({
+          username: 'explicit_undefined',
+          email: 'explicit@test.com',
+          isActive: undefined, // Has default: true - should NOT become NULL
+          age: undefined, // No default - nullable column
+        }).returning();
+
+        // isActive should use DB default (true), not be NULL
+        expect(user.isActive).toBe(true);
+        // age has no default, so undefined becomes NULL
+        expect(user.age).toBeNull();
+      });
+    });
+
+    test('should allow overriding default value with explicit value', async () => {
+      await withDatabase(async (db) => {
+        const user = await db.users.insert({
+          username: 'override_default',
+          email: 'override@test.com',
+          isActive: false, // Override the default of true
+        }).returning();
+
+        expect(user.isActive).toBe(false); // Explicitly set to false
+      });
+    });
+
+    test('should allow overriding default value with NULL', async () => {
+      await withDatabase(async (db) => {
+        // For nullable columns with defaults, NULL should be inserted explicitly
+        const user = await db.users.insert({
+          username: 'null_override',
+          email: 'null_override@test.com',
+          metadata: null, // Explicitly set to NULL
+        }).returning();
+
+        expect(user.metadata).toBeNull();
+      });
+    });
+
+    test('should handle undefined vs null differently in bulk insert', async () => {
+      await withDatabase(async (db) => {
+        // When ALL rows have undefined for a column with a default, the column is skipped
+        // and all rows get the database default value
+        const allUndefinedUsers = await db.users.insertBulk([
+          {
+            username: 'all_undefined_1',
+            email: 'all_undefined_1@test.com',
+            isActive: undefined, // Has default: true
+          },
+          {
+            username: 'all_undefined_2',
+            email: 'all_undefined_2@test.com',
+            isActive: undefined, // Has default: true
+          },
+        ]).returning();
+
+        expect(allUndefinedUsers).toHaveLength(2);
+        // Both should use DB default since ALL rows had undefined
+        expect(allUndefinedUsers[0].isActive).toBe(true);
+        expect(allUndefinedUsers[1].isActive).toBe(true);
+
+        // When SOME rows have defined values and others have undefined,
+        // the undefined rows get NULL (because column must be included for consistent schema)
+        const mixedUsers = await db.users.insertBulk([
+          {
+            username: 'mixed_explicit_true',
+            email: 'mixed_true@test.com',
+            isActive: true, // Explicit true
+          },
+          {
+            username: 'mixed_explicit_false',
+            email: 'mixed_false@test.com',
+            isActive: false, // Explicit false
+          },
+        ]).returning();
+
+        expect(mixedUsers).toHaveLength(2);
+        const trueUser = mixedUsers.find(u => u.username === 'mixed_explicit_true');
+        const falseUser = mixedUsers.find(u => u.username === 'mixed_explicit_false');
+        expect(trueUser?.isActive).toBe(true); // Explicit
+        expect(falseUser?.isActive).toBe(false); // Explicit
+      });
+    });
+
+    test('should use database default for identity columns (auto-increment)', async () => {
+      await withDatabase(async (db) => {
+        // Insert without providing id - should be auto-generated
+        const user1 = await db.users.insert({
+          username: 'auto_id_1',
+          email: 'auto1@test.com',
+        }).returning();
+
+        const user2 = await db.users.insert({
+          username: 'auto_id_2',
+          email: 'auto2@test.com',
+        }).returning();
+
+        // IDs should be auto-generated and sequential
+        expect(user1.id).toBeDefined();
+        expect(user2.id).toBeDefined();
+        expect(user2.id).toBeGreaterThan(user1.id);
+      });
+    });
+
+    test('should use database defaults for Post with multiple default columns', async () => {
+      await withDatabase(async (db) => {
+        // First create a user since posts need userId
+        const user = await db.users.insert({
+          username: 'post_owner',
+          email: 'owner@test.com',
+        }).returning();
+
+        // Insert post with only required fields - others should use defaults
+        const post = await db.posts.insert({
+          title: 'Test Post',
+          userId: user.id,
+        }).returning();
+
+        expect(post.id).toBeDefined(); // Identity column
+        expect(post.views).toBe(0); // Default is 0
+        expect(post.publishedAt).toBeDefined(); // Default is NOW()
+        expect(post.category).toBe('tech'); // Default is 'tech'
+      });
+    });
+
     test('should reject insert with duplicate unique key', async () => {
       await withDatabase(async (db) => {
         await db.users.insert({

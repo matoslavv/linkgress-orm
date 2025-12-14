@@ -151,6 +151,8 @@ export function buildColumnConfigs(
 
 /**
  * Extract unique column keys from array of data objects
+ * A column is included if ANY row has a non-undefined value for it.
+ * Columns with defaults are only skipped if ALL rows have undefined for that column.
  */
 export function extractUniqueColumnKeys(
   dataArray: Record<string, any>[],
@@ -159,16 +161,36 @@ export function extractUniqueColumnKeys(
 ): string[] {
   const columnSet = new Set<string>();
 
+  // First, collect all column keys that appear in any data object
+  const allKeys = new Set<string>();
   for (const data of dataArray) {
     for (const key of Object.keys(data)) {
-      const column = schema.columns[key];
-      if (column) {
-        const config = column.build();
-        if (!config.autoIncrement || includeAutoIncrement) {
-          columnSet.add(key);
-        }
-      }
+      allKeys.add(key);
     }
+  }
+
+  // Then determine which columns to include
+  for (const key of allKeys) {
+    const column = schema.columns[key];
+    if (!column) {
+      continue;
+    }
+
+    const config = column.build();
+    // Skip auto-increment columns (unless explicitly including them)
+    if (config.autoIncrement && !includeAutoIncrement) {
+      continue;
+    }
+
+    // Check if any row has a defined (non-undefined) value for this column
+    const hasDefinedValue = dataArray.some(data => data[key] !== undefined);
+
+    // If column has a default and ALL rows have undefined, skip it (let DB use default)
+    if (!hasDefinedValue && (config.default !== undefined || config.identity)) {
+      continue;
+    }
+
+    columnSet.add(key);
   }
 
   return Array.from(columnSet);
