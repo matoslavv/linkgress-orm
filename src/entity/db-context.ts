@@ -63,6 +63,12 @@ export interface ColumnInfo<TEntity = any> {
   isUnique: boolean;
   /** Default value if any */
   defaultValue?: any;
+  /** Whether this is a navigation property (only present when includeNavigation is true) */
+  isNavigation?: boolean;
+  /** Navigation type: 'one' for reference, 'many' for collection (only for navigation properties) */
+  navigationType?: 'one' | 'many';
+  /** Target table name (only for navigation properties) */
+  targetTable?: string;
 }
 
 /**
@@ -1924,22 +1930,29 @@ export class DbEntityTable<TEntity extends DbEntity> {
 
   /**
    * Get information about all columns in this table.
-   * This method returns metadata about database columns only, excluding navigation properties.
+   * By default returns metadata about database columns only, excluding navigation properties.
    *
    * @param options - Optional configuration
-   * @param options.includeNavigation - If false (default), only returns database columns.
-   *                                    Navigation properties are never included as they are not columns.
+   * @param options.includeNavigation - If true, includes navigation properties in the result.
+   *                                    Defaults to false (only database columns).
    *
    * @returns Array of column information objects
    *
    * @example
    * ```typescript
-   * // Get all columns
+   * // Get only database columns (default)
    * const columns = db.users.getColumns();
    * // Returns: [
    * //   { propertyName: 'id', columnName: 'id', type: 'integer', isPrimaryKey: true, ... },
    * //   { propertyName: 'username', columnName: 'username', type: 'varchar', ... },
    * //   { propertyName: 'email', columnName: 'email', type: 'text', ... },
+   * // ]
+   *
+   * // Include navigation properties
+   * const allColumns = db.users.getColumns({ includeNavigation: true });
+   * // Returns: [
+   * //   { propertyName: 'id', columnName: 'id', type: 'integer', ... },
+   * //   { propertyName: 'posts', isNavigation: true, navigationType: 'many', targetTable: 'posts' },
    * // ]
    *
    * // Get column names only
@@ -1951,7 +1964,7 @@ export class DbEntityTable<TEntity extends DbEntity> {
    * // Returns: ['id', 'username', 'email', ...]
    * ```
    */
-  getColumns(): ColumnInfo<TEntity>[] {
+  getColumns(options?: { includeNavigation?: boolean }): ColumnInfo<TEntity>[] {
     const schema = this._getSchema();
     const columns: ColumnInfo<TEntity>[] = [];
 
@@ -1969,6 +1982,24 @@ export class DbEntityTable<TEntity extends DbEntity> {
       });
     }
 
+    // Add navigation properties if requested
+    if (options?.includeNavigation && schema.relations) {
+      for (const [relName, relConfig] of Object.entries(schema.relations)) {
+        columns.push({
+          propertyName: relName as ExtractDbColumnKeys<TEntity>,
+          columnName: relName,  // Navigation properties don't have a real DB column name
+          type: relConfig.type === 'many' ? 'collection' : 'reference',
+          isPrimaryKey: false,
+          isAutoIncrement: false,
+          isNullable: !(relConfig as any).isMandatory,
+          isUnique: false,
+          isNavigation: true,
+          navigationType: relConfig.type as 'one' | 'many',
+          targetTable: relConfig.targetTable,
+        });
+      }
+    }
+
     return columns;
   }
 
@@ -1979,13 +2010,21 @@ export class DbEntityTable<TEntity extends DbEntity> {
    * This is a convenience method equivalent to `getColumns().map(c => c.propertyName)`
    * but with better type inference.
    *
+   * @param options - Optional configuration
+   * @param options.includeNavigation - If true, includes navigation property names.
+   *                                    Defaults to false (only database columns).
+   *
    * @returns Array of column property names typed as ExtractDbColumnKeys<TEntity>
    *
    * @example
    * ```typescript
-   * // Get all column keys
+   * // Get only database column keys (default)
    * const keys = db.users.getColumnKeys();
    * // Type: ExtractDbColumnKeys<User>[] which is ('id' | 'username' | 'email' | ...)[]
+   *
+   * // Include navigation property names
+   * const allKeys = db.users.getColumnKeys({ includeNavigation: true });
+   * // Returns: ['id', 'username', 'email', 'posts', 'orders', ...]
    *
    * // Use for dynamic property access
    * const user = await db.users.findOne(u => eq(u.id, 1));
@@ -1998,9 +2037,16 @@ export class DbEntityTable<TEntity extends DbEntity> {
    * // columnKeys[0] is typed as 'id' | 'username' | 'email' | ...
    * ```
    */
-  getColumnKeys(): ExtractDbColumnKeys<TEntity>[] {
+  getColumnKeys(options?: { includeNavigation?: boolean }): ExtractDbColumnKeys<TEntity>[] {
     const schema = this._getSchema();
-    return Object.keys(schema.columns) as ExtractDbColumnKeys<TEntity>[];
+    const columnKeys = Object.keys(schema.columns);
+
+    if (options?.includeNavigation && schema.relations) {
+      const relationKeys = Object.keys(schema.relations);
+      return [...columnKeys, ...relationKeys] as ExtractDbColumnKeys<TEntity>[];
+    }
+
+    return columnKeys as ExtractDbColumnKeys<TEntity>[];
   }
 
   /**
