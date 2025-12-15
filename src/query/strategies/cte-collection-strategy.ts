@@ -194,7 +194,7 @@ export class CteCollectionStrategy implements ICollectionStrategy {
     cteName: string,
     context: QueryContext
   ): string {
-    const { selectedFields, targetTable, foreignKey, whereClause, orderByClause, limitValue, offsetValue, isDistinct, navigationJoins } = config;
+    const { selectedFields, targetTable, foreignKey, whereClause, orderByClause, orderByClauseAlias, limitValue, offsetValue, isDistinct, navigationJoins } = config;
 
     // Collect all leaf fields for the SELECT clause
     const leafFields = this.collectLeafFields(selectedFields);
@@ -245,11 +245,11 @@ export class CteCollectionStrategy implements ICollectionStrategy {
       }),
     ];
 
-    // Build ORDER BY clause
+    // Build ORDER BY clause for subquery (uses database column names)
     const orderBySQL = orderByClause ? `ORDER BY ${orderByClause}` : '';
 
-    // Build the json_agg ORDER BY clause
-    const jsonAggOrderBy = orderByClause ? ` ORDER BY ${orderByClause}` : '';
+    // Build the json_agg ORDER BY clause (uses aliases since it operates on subquery output)
+    const jsonAggOrderBy = orderByClauseAlias ? ` ORDER BY ${orderByClauseAlias}` : '';
 
     const cteSQL = `
 SELECT

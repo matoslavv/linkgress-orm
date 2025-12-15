@@ -4961,17 +4961,35 @@ export class CollectionQueryBuilder<TItem = any> {
       context.allParams.push(...params);
     }
 
-    // Step 3: Build ORDER BY clause SQL (without ORDER BY keyword)
+    // Step 3: Build ORDER BY clauses SQL (without ORDER BY keyword)
+    // We need two versions:
+    // - orderByClause: uses database column names (for subquery ORDER BY on raw table)
+    // - orderByClauseAlias: uses property names/aliases (for json_agg ORDER BY on aliased subquery output)
+    // Note: orderByFields[].field already contains the database column name (from parseOrderBy using __dbColumnName)
     let orderByClause: string | undefined;
+    let orderByClauseAlias: string | undefined;
     if (this.orderByFields.length > 0) {
-      // Performance: Pre-compute column name map for ORDER BY lookups
-      const colNameMap = this.targetTableSchema ? getColumnNameMapForSchema(this.targetTableSchema) : null;
-      const orderParts = this.orderByFields.map(({ field, direction }) => {
-        // Look up the database column name from the cached map if available
-        const dbColumnName = colNameMap?.get(field) ?? field;
-        return `"${dbColumnName}" ${direction}`;
+      // Build reverse lookup: db column name -> property name
+      let dbToPropertyMap: Map<string, string> | null = null;
+      if (this.targetTableSchema) {
+        dbToPropertyMap = new Map();
+        for (const [propName, colBuilder] of Object.entries(this.targetTableSchema.columns)) {
+          const config = (colBuilder as any).build();
+          dbToPropertyMap.set(config.name, propName);
+        }
+      }
+
+      const orderPartsDb = this.orderByFields.map(({ field, direction }) => {
+        // field is already the database column name
+        return `"${field}" ${direction}`;
       });
-      orderByClause = orderParts.join(', ');
+      const orderPartsAlias = this.orderByFields.map(({ field, direction }) => {
+        // Look up the property name from the db column name
+        const propertyName = dbToPropertyMap?.get(field) ?? field;
+        return `"${propertyName}" ${direction}`;
+      });
+      orderByClause = orderPartsDb.join(', ');
+      orderByClauseAlias = orderPartsAlias.join(', ');
     }
 
     // Step 4: Determine aggregation type and field
@@ -5039,6 +5057,7 @@ export class CollectionQueryBuilder<TItem = any> {
       whereClause,
       whereParams,  // Pass WHERE clause parameters
       orderByClause,
+      orderByClauseAlias,  // For json_agg ORDER BY which uses aliases
       limitValue: this.limitValue,
       offsetValue: this.offsetValue,
       isDistinct: this.isDistinct,

@@ -530,7 +530,7 @@ ${orderBySQL.replace(/ORDER BY/i, 'ORDER BY')}
     config: CollectionAggregationConfig,
     tempTableName: string
   ): string {
-    const { selectedFields, targetTable, foreignKey, whereClause, orderByClause, limitValue, offsetValue, isDistinct } = config;
+    const { selectedFields, targetTable, foreignKey, whereClause, orderByClause, orderByClauseAlias, limitValue, offsetValue, isDistinct } = config;
 
     // Helper to build json_build_object expression (handles nested structures)
     const buildJsonbObject = (fields: SelectedField[], prefix: string = '', tableAlias: string = 't'): string => {
@@ -557,8 +557,8 @@ ${orderBySQL.replace(/ORDER BY/i, 'ORDER BY')}
     // Build ORDER BY clause (use primary key DESC as default for consistent ordering matching JSONB)
     const orderBySQL = orderByClause ? `ORDER BY ${orderByClause}` : `ORDER BY "id" DESC`;
 
-    // Build json_agg ORDER BY clause
-    const jsonbAggOrderBy = orderByClause ? ` ORDER BY ${orderByClause}` : '';
+    // Build json_agg ORDER BY clause (uses aliases since it operates on subquery output)
+    const jsonbAggOrderBy = orderByClauseAlias ? ` ORDER BY ${orderByClauseAlias}` : '';
 
     // If LIMIT or OFFSET is specified, use ROW_NUMBER() for per-parent pagination
     if (limitValue !== undefined || offsetValue !== undefined) {
@@ -637,7 +637,7 @@ GROUP BY t."${foreignKey}"
     config: CollectionAggregationConfig,
     tempTableName: string
   ): string {
-    const { arrayField, targetTable, foreignKey, whereClause, orderByClause, limitValue, offsetValue } = config;
+    const { arrayField, targetTable, foreignKey, whereClause, orderByClause, orderByClauseAlias, limitValue, offsetValue } = config;
 
     if (!arrayField) {
       throw new Error('arrayField is required for array aggregation');
@@ -649,8 +649,8 @@ GROUP BY t."${foreignKey}"
     // Build ORDER BY clause (use primary key DESC as default for consistent ordering matching JSONB)
     const orderBySQL = orderByClause ? `ORDER BY ${orderByClause}` : `ORDER BY "id" DESC`;
 
-    // Build array_agg ORDER BY clause
-    const arrayAggOrderBy = orderByClause ? ` ORDER BY ${orderByClause}` : '';
+    // Build array_agg ORDER BY clause (uses aliases since it operates on subquery output)
+    const arrayAggOrderBy = orderByClauseAlias ? ` ORDER BY ${orderByClauseAlias}` : '';
 
     // If LIMIT or OFFSET is specified, use ROW_NUMBER() for per-parent pagination
     if (limitValue !== undefined || offsetValue !== undefined) {

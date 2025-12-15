@@ -175,9 +175,16 @@ export interface CollectionAggregationConfig {
   whereParams?: any[];
 
   /**
-   * ORDER BY clause SQL (without ORDER BY keyword)
+   * ORDER BY clause SQL (without ORDER BY keyword) - uses database column names
+   * Used for ordering in subqueries that access raw table columns
    */
   orderByClause?: string;
+
+  /**
+   * ORDER BY clause SQL using property names (aliases)
+   * Used for ordering in json_agg which operates on aliased subquery output
+   */
+  orderByClauseAlias?: string;
 
   /**
    * LIMIT value
