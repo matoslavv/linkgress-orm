@@ -310,8 +310,20 @@ export class JoinQueryBuilder<TLeft, TRight> {
     // Build ORDER BY clause
     let orderByClause = '';
     if (this.orderByFields.length > 0) {
+      // Build column name maps for all tables involved
+      const leftColNameMap = getColumnNameMapForSchema(this.leftSchema);
+      const colNameMaps: Record<string, Map<string, string>> = {
+        [this.leftAlias]: leftColNameMap,
+      };
+      for (const join of this.joins) {
+        colNameMaps[join.alias] = getColumnNameMapForSchema(join.schema);
+      }
       const orderParts = this.orderByFields.map(
-        ({ table, field, direction }) => `"${table}"."${field}" ${direction}`
+        ({ table, field, direction }) => {
+          const colMap = colNameMaps[table];
+          const dbColumnName = colMap?.get(field) ?? field;
+          return `"${table}"."${dbColumnName}" ${direction}`;
+        }
       );
       orderByClause = `ORDER BY ${orderParts.join(', ')}`;
     }

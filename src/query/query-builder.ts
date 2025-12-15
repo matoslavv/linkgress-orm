@@ -1799,9 +1799,33 @@ export class SelectQueryBuilder<TSelection> {
         }
 
         // Build ORDER BY
-        let orderBySQL = orderByFields.length > 0
-          ? ` ORDER BY ${orderByFields.map(({ field, direction }: any) => `"${field}" ${direction}`).join(', ')}`
-          : ` ORDER BY "id" DESC`;
+        let orderBySQL: string;
+        const targetSchema = builderAny.targetTableSchema;
+        if (orderByFields.length > 0) {
+          const colNameMap = targetSchema ? getColumnNameMapForSchema(targetSchema) : null;
+          orderBySQL = ` ORDER BY ${orderByFields.map(({ field, direction }: any) => {
+            const dbColumnName = colNameMap?.get(field) ?? field;
+            return `"${dbColumnName}" ${direction}`;
+          }).join(', ')}`;
+        } else {
+          // Find primary key column from schema, fallback to "id" if not found
+          let pkColumn: string = null as any;
+          if (targetSchema) {
+            for (const colBuilder of Object.values(targetSchema.columns)) {
+              const config = (colBuilder as any).build();
+              if (config.primaryKey) {
+                pkColumn = config.name;
+                break;
+              }
+            }
+          }
+
+          if (pkColumn) {
+            orderBySQL = ` ORDER BY "${pkColumn}" DESC`;
+          } else {
+            orderBySQL = ' ';
+          }
+        }
 
         const collectionSQL = `SELECT "${foreignKey}" as parent_id, ${selectedFieldsSQL} FROM "${targetTable}" WHERE "${foreignKey}" IN (SELECT "__pk_id" FROM ${baseTempTable})${orderBySQL}`;
         sqls.push(collectionSQL);
@@ -2785,215 +2809,215 @@ export class SelectQueryBuilder<TSelection> {
     } else {
       // Process selection object properties
       for (const [key, value] of Object.entries(selection)) {
-      if (value instanceof CollectionQueryBuilder || (value && typeof value === 'object' && '__collectionResult' in value)) {
-        // Handle collection - delegate to strategy pattern via buildCTE
-        // The strategy handles CTE/LATERAL specifics and returns necessary info
-        const cteData = (value as any).buildCTE ? (value as any).buildCTE(context) : (value as CollectionQueryBuilder<any>).buildCTE(context);
-        const isCTE = cteData.isCTE !== false; // Default to CTE if not specified
+        if (value instanceof CollectionQueryBuilder || (value && typeof value === 'object' && '__collectionResult' in value)) {
+          // Handle collection - delegate to strategy pattern via buildCTE
+          // The strategy handles CTE/LATERAL specifics and returns necessary info
+          const cteData = (value as any).buildCTE ? (value as any).buildCTE(context) : (value as CollectionQueryBuilder<any>).buildCTE(context);
+          const isCTE = cteData.isCTE !== false; // Default to CTE if not specified
 
-        // Note: For CTE strategy, context.ctes is already populated by the strategy
-        // We don't need to add it again - the strategy has already done this
+          // Note: For CTE strategy, context.ctes is already populated by the strategy
+          // We don't need to add it again - the strategy has already done this
 
-        collectionFields.push({
-          name: key,
-          cteName: cteData.tableName || `cte_${context.cteCounter - 1}`, // Use tableName from result or infer from counter
-          isCTE,
-          joinClause: cteData.joinClause,
-          selectExpression: cteData.selectExpression,
-        });
-      } else if (value instanceof Subquery || (value && typeof value === 'object' && 'buildSql' in value && typeof (value as any).buildSql === 'function' && '__mode' in value)) {
-        // Handle Subquery - build SQL and wrap in parentheses
-        // Check both instanceof and duck typing for Subquery
-        const sqlBuildContext = {
-          paramCounter: context.paramCounter,
-          params: context.allParams,
-        };
-        const subquerySql = (value as Subquery).buildSql(sqlBuildContext);
-        context.paramCounter = sqlBuildContext.paramCounter;
-        selectParts.push(`(${subquerySql}) as "${key}"`);
-      } else if (value instanceof SqlFragment) {
-        // SQL Fragment - build the SQL expression
-        const sqlBuildContext = {
-          paramCounter: context.paramCounter,
-          params: context.allParams,
-        };
-        const fragmentSql = value.buildSql(sqlBuildContext);
-        context.paramCounter = sqlBuildContext.paramCounter;
-        selectParts.push(`${fragmentSql} as "${key}"`);
-      } else if (typeof value === 'object' && value !== null && '__dbColumnName' in value) {
-        // FieldRef object - check if it has a table alias (from navigation)
-        if ('__tableAlias' in value && value.__tableAlias && typeof value.__tableAlias === 'string') {
-          // This is a field from a joined table
-          const tableAlias = value.__tableAlias as string;
-          const columnName = value.__dbColumnName as string;
+          collectionFields.push({
+            name: key,
+            cteName: cteData.tableName || `cte_${context.cteCounter - 1}`, // Use tableName from result or infer from counter
+            isCTE,
+            joinClause: cteData.joinClause,
+            selectExpression: cteData.selectExpression,
+          });
+        } else if (value instanceof Subquery || (value && typeof value === 'object' && 'buildSql' in value && typeof (value as any).buildSql === 'function' && '__mode' in value)) {
+          // Handle Subquery - build SQL and wrap in parentheses
+          // Check both instanceof and duck typing for Subquery
+          const sqlBuildContext = {
+            paramCounter: context.paramCounter,
+            params: context.allParams,
+          };
+          const subquerySql = (value as Subquery).buildSql(sqlBuildContext);
+          context.paramCounter = sqlBuildContext.paramCounter;
+          selectParts.push(`(${subquerySql}) as "${key}"`);
+        } else if (value instanceof SqlFragment) {
+          // SQL Fragment - build the SQL expression
+          const sqlBuildContext = {
+            paramCounter: context.paramCounter,
+            params: context.allParams,
+          };
+          const fragmentSql = value.buildSql(sqlBuildContext);
+          context.paramCounter = sqlBuildContext.paramCounter;
+          selectParts.push(`${fragmentSql} as "${key}"`);
+        } else if (typeof value === 'object' && value !== null && '__dbColumnName' in value) {
+          // FieldRef object - check if it has a table alias (from navigation)
+          if ('__tableAlias' in value && value.__tableAlias && typeof value.__tableAlias === 'string') {
+            // This is a field from a joined table
+            const tableAlias = value.__tableAlias as string;
+            const columnName = value.__dbColumnName as string;
 
-          // Find the relation config for this navigation
-          const relConfig = this.schema.relations[tableAlias];
-          if (relConfig) {
-            // Add JOIN if not already added
-            if (!joins.find(j => j.alias === tableAlias)) {
-              // Get target schema from targetTableBuilder if available
-              let targetSchema: string | undefined;
-              if (relConfig.targetTableBuilder) {
-                const targetTableSchema = relConfig.targetTableBuilder.build();
-                targetSchema = targetTableSchema.schema;
-              }
-
-              joins.push({
-                alias: tableAlias,
-                targetTable: relConfig.targetTable,
-                targetSchema,
-                foreignKeys: relConfig.foreignKeys || [relConfig.foreignKey || ''],
-                matches: relConfig.matches || [],
-                isMandatory: relConfig.isMandatory ?? false,
-              });
-            }
-          }
-
-          // Check if this is a CTE aggregation column that needs COALESCE
-          const cteJoin = this.manualJoins.find(j => j.cte && j.cte.name === tableAlias);
-          if (cteJoin && cteJoin.cte && cteJoin.cte.isAggregationColumn(columnName)) {
-            // CTE aggregation column - wrap with COALESCE to return empty array instead of null
-            selectParts.push(`COALESCE("${tableAlias}"."${columnName}", '[]'::json) as "${key}"`);
-          } else {
-            selectParts.push(`"${tableAlias}"."${columnName}" as "${key}"`);
-          }
-        } else {
-          // Regular field from the main table
-          selectParts.push(`"${this.schema.name}"."${value.__dbColumnName}" as "${key}"`);
-        }
-      } else if (typeof value === 'string') {
-        // Simple column reference (for backward compatibility or direct usage)
-        selectParts.push(`"${this.schema.name}"."${value}" as "${key}"`);
-      } else if (typeof value === 'object' && value !== null) {
-        // Check if this is a navigation property mock or placeholder
-        if (!('__dbColumnName' in value)) {
-          // This is not a FieldRef - check if it's a navigation property mock or array
-          if (Array.isArray(value)) {
-            // Skip arrays (empty navigation placeholders)
-            continue;
-          }
-          // Check if it's a CollectionQueryBuilder or ReferenceQueryBuilder instance
-          if (value instanceof CollectionQueryBuilder) {
-            // Skip collection query builders that haven't been resolved
-            continue;
-          } else if (value instanceof ReferenceQueryBuilder) {
-            // Handle ReferenceQueryBuilder - select all fields from the target table
-            const targetSchema = value.getTargetTableSchema();
-            const alias = value.getAlias();
-
-            if (targetSchema) {
+            // Find the relation config for this navigation
+            const relConfig = this.schema.relations[tableAlias];
+            if (relConfig) {
               // Add JOIN if not already added
-              if (!joins.find(j => j.alias === alias)) {
-                // Get target schema name from targetSchema
-                let targetTableSchema: string | undefined;
-                if (targetSchema.schema) {
-                  targetTableSchema = targetSchema.schema;
+              if (!joins.find(j => j.alias === tableAlias)) {
+                // Get target schema from targetTableBuilder if available
+                let targetSchema: string | undefined;
+                if (relConfig.targetTableBuilder) {
+                  const targetTableSchema = relConfig.targetTableBuilder.build();
+                  targetSchema = targetTableSchema.schema;
                 }
 
                 joins.push({
-                  alias,
-                  targetTable: value.getTargetTable(),
-                  targetSchema: targetTableSchema,
-                  foreignKeys: value.getForeignKeys(),
-                  matches: value.getMatches(),
-                  isMandatory: value.getIsMandatory(),
+                  alias: tableAlias,
+                  targetTable: relConfig.targetTable,
+                  targetSchema,
+                  foreignKeys: relConfig.foreignKeys || [relConfig.foreignKey || ''],
+                  matches: relConfig.matches || [],
+                  isMandatory: relConfig.isMandatory ?? false,
                 });
               }
+            }
 
-              // Select all columns from the target table and group them
-              // We'll need to use JSON object building in SQL
-              const fieldParts: string[] = [];
-              // Performance: Use cached column name map
-              const targetColMap = getColumnNameMapForSchema(targetSchema);
-              for (const [colKey, dbColName] of targetColMap) {
-                fieldParts.push(`'${colKey}', "${alias}"."${dbColName}"`);
-              }
-
-              selectParts.push(`json_build_object(${fieldParts.join(', ')}) as "${key}"`);
+            // Check if this is a CTE aggregation column that needs COALESCE
+            const cteJoin = this.manualJoins.find(j => j.cte && j.cte.name === tableAlias);
+            if (cteJoin && cteJoin.cte && cteJoin.cte.isAggregationColumn(columnName)) {
+              // CTE aggregation column - wrap with COALESCE to return empty array instead of null
+              selectParts.push(`COALESCE("${tableAlias}"."${columnName}", '[]'::json) as "${key}"`);
             } else {
-              // No target schema available, skip
+              selectParts.push(`"${tableAlias}"."${columnName}" as "${key}"`);
+            }
+          } else {
+            // Regular field from the main table
+            selectParts.push(`"${this.schema.name}"."${value.__dbColumnName}" as "${key}"`);
+          }
+        } else if (typeof value === 'string') {
+          // Simple column reference (for backward compatibility or direct usage)
+          selectParts.push(`"${this.schema.name}"."${value}" as "${key}"`);
+        } else if (typeof value === 'object' && value !== null) {
+          // Check if this is a navigation property mock or placeholder
+          if (!('__dbColumnName' in value)) {
+            // This is not a FieldRef - check if it's a navigation property mock or array
+            if (Array.isArray(value)) {
+              // Skip arrays (empty navigation placeholders)
               continue;
             }
-          }
-          // Check if it's a mock object with property descriptors (navigation property mock)
-          const props = Object.getOwnPropertyNames(value);
-          if (props.length > 0) {
-            const firstProp = props[0];
-            const descriptor = Object.getOwnPropertyDescriptor(value, firstProp);
-            if (descriptor && descriptor.get) {
-              // This object has getter properties - likely a navigation mock
-              // Try to determine if this is a reference navigation by checking the schema relations
-              const tableAlias = Object.keys(value).find(k => {
-                const desc = Object.getOwnPropertyDescriptor(value, k);
-                return desc && desc.get && typeof desc.get === 'function';
-              });
+            // Check if it's a CollectionQueryBuilder or ReferenceQueryBuilder instance
+            if (value instanceof CollectionQueryBuilder) {
+              // Skip collection query builders that haven't been resolved
+              continue;
+            } else if (value instanceof ReferenceQueryBuilder) {
+              // Handle ReferenceQueryBuilder - select all fields from the target table
+              const targetSchema = value.getTargetTableSchema();
+              const alias = value.getAlias();
 
-              if (tableAlias) {
-                // Try to get the first property to check if it has __tableAlias
-                try {
-                  const firstValue = (value as any)[tableAlias];
-                  if (firstValue && typeof firstValue === 'object' && '__tableAlias' in firstValue) {
-                    const alias = firstValue.__tableAlias as string;
-                    const relConfig = this.schema.relations[alias];
+              if (targetSchema) {
+                // Add JOIN if not already added
+                if (!joins.find(j => j.alias === alias)) {
+                  // Get target schema name from targetSchema
+                  let targetTableSchema: string | undefined;
+                  if (targetSchema.schema) {
+                    targetTableSchema = targetSchema.schema;
+                  }
 
-                    if (relConfig && relConfig.type === 'one') {
-                      // This is a reference navigation - select all fields from the target table
-                      // Performance: Use cached target schema
-                      const targetSchema = getTargetSchemaForRelation(this.schema, alias, relConfig);
+                  joins.push({
+                    alias,
+                    targetTable: value.getTargetTable(),
+                    targetSchema: targetTableSchema,
+                    foreignKeys: value.getForeignKeys(),
+                    matches: value.getMatches(),
+                    isMandatory: value.getIsMandatory(),
+                  });
+                }
 
-                      if (targetSchema) {
-                        // Add JOIN if not already added
-                        if (!joins.find(j => j.alias === alias)) {
-                          let targetTableSchema: string | undefined;
-                          if (targetSchema.schema) {
-                            targetTableSchema = targetSchema.schema;
+                // Select all columns from the target table and group them
+                // We'll need to use JSON object building in SQL
+                const fieldParts: string[] = [];
+                // Performance: Use cached column name map
+                const targetColMap = getColumnNameMapForSchema(targetSchema);
+                for (const [colKey, dbColName] of targetColMap) {
+                  fieldParts.push(`'${colKey}', "${alias}"."${dbColName}"`);
+                }
+
+                selectParts.push(`json_build_object(${fieldParts.join(', ')}) as "${key}"`);
+              } else {
+                // No target schema available, skip
+                continue;
+              }
+            }
+            // Check if it's a mock object with property descriptors (navigation property mock)
+            const props = Object.getOwnPropertyNames(value);
+            if (props.length > 0) {
+              const firstProp = props[0];
+              const descriptor = Object.getOwnPropertyDescriptor(value, firstProp);
+              if (descriptor && descriptor.get) {
+                // This object has getter properties - likely a navigation mock
+                // Try to determine if this is a reference navigation by checking the schema relations
+                const tableAlias = Object.keys(value).find(k => {
+                  const desc = Object.getOwnPropertyDescriptor(value, k);
+                  return desc && desc.get && typeof desc.get === 'function';
+                });
+
+                if (tableAlias) {
+                  // Try to get the first property to check if it has __tableAlias
+                  try {
+                    const firstValue = (value as any)[tableAlias];
+                    if (firstValue && typeof firstValue === 'object' && '__tableAlias' in firstValue) {
+                      const alias = firstValue.__tableAlias as string;
+                      const relConfig = this.schema.relations[alias];
+
+                      if (relConfig && relConfig.type === 'one') {
+                        // This is a reference navigation - select all fields from the target table
+                        // Performance: Use cached target schema
+                        const targetSchema = getTargetSchemaForRelation(this.schema, alias, relConfig);
+
+                        if (targetSchema) {
+                          // Add JOIN if not already added
+                          if (!joins.find(j => j.alias === alias)) {
+                            let targetTableSchema: string | undefined;
+                            if (targetSchema.schema) {
+                              targetTableSchema = targetSchema.schema;
+                            }
+
+                            joins.push({
+                              alias,
+                              targetTable: relConfig.targetTable,
+                              targetSchema: targetTableSchema,
+                              foreignKeys: relConfig.foreignKeys || [relConfig.foreignKey || ''],
+                              matches: relConfig.matches || [],
+                              isMandatory: relConfig.isMandatory ?? false,
+                            });
                           }
 
-                          joins.push({
-                            alias,
-                            targetTable: relConfig.targetTable,
-                            targetSchema: targetTableSchema,
-                            foreignKeys: relConfig.foreignKeys || [relConfig.foreignKey || ''],
-                            matches: relConfig.matches || [],
-                            isMandatory: relConfig.isMandatory ?? false,
-                          });
-                        }
+                          // Select all columns from the target table and group them into a JSON object
+                          const fieldParts: string[] = [];
+                          // Performance: Use cached column name map
+                          const targetColMap = getColumnNameMapForSchema(targetSchema);
+                          for (const [colKey, dbColName] of targetColMap) {
+                            fieldParts.push(`'${colKey}', "${alias}"."${dbColName}"`);
+                          }
 
-                        // Select all columns from the target table and group them into a JSON object
-                        const fieldParts: string[] = [];
-                        // Performance: Use cached column name map
-                        const targetColMap = getColumnNameMapForSchema(targetSchema);
-                        for (const [colKey, dbColName] of targetColMap) {
-                          fieldParts.push(`'${colKey}', "${alias}"."${dbColName}"`);
+                          selectParts.push(`json_build_object(${fieldParts.join(', ')}) as "${key}"`);
+                          continue;
                         }
-
-                        selectParts.push(`json_build_object(${fieldParts.join(', ')}) as "${key}"`);
-                        continue;
                       }
                     }
+                  } catch (e) {
+                    // If accessing the property fails, just skip this navigation
                   }
-                } catch (e) {
-                  // If accessing the property fails, just skip this navigation
                 }
-              }
 
-              // Default: skip this navigation mock
-              continue;
+                // Default: skip this navigation mock
+                continue;
+              }
             }
           }
+          // Otherwise, treat as literal value
+          selectParts.push(`$${context.paramCounter++} as "${key}"`);
+          context.allParams.push(value);
+        } else if (value === undefined) {
+          // Skip undefined values (navigation property placeholders)
+          continue;
+        } else {
+          // Literal value or expression
+          selectParts.push(`$${context.paramCounter++} as "${key}"`);
+          context.allParams.push(value);
         }
-        // Otherwise, treat as literal value
-        selectParts.push(`$${context.paramCounter++} as "${key}"`);
-        context.allParams.push(value);
-      } else if (value === undefined) {
-        // Skip undefined values (navigation property placeholders)
-        continue;
-      } else {
-        // Literal value or expression
-        selectParts.push(`$${context.paramCounter++} as "${key}"`);
-        context.allParams.push(value);
-      }
       } // End of for loop
     } // End of else block
 
@@ -3048,6 +3072,8 @@ export class SelectQueryBuilder<TSelection> {
     // Build ORDER BY clause
     let orderByClause = '';
     if (this.orderByFields.length > 0) {
+      // Performance: Pre-compute column name map for ORDER BY lookups
+      const colNameMap = getColumnNameMapForSchema(this.schema);
       const orderParts = this.orderByFields.map(
         ({ field, direction }) => {
           // Check if the field is in the selection (after a select() call)
@@ -3057,7 +3083,9 @@ export class SelectQueryBuilder<TSelection> {
             return `"${field}" ${direction}`;
           } else {
             // Field is not in the selection, use table.column notation
-            return `"${this.schema.name}"."${field}" ${direction}`;
+            // Look up the database column name from the schema
+            const dbColumnName = colNameMap.get(field) ?? field;
+            return `"${this.schema.name}"."${dbColumnName}" ${direction}`;
           }
         }
       );
@@ -3814,10 +3842,10 @@ type IsClassInstance<T> = T extends { __isDbColumn: true }
   ? false  // Exclude SqlFragment
   : T extends { valueOf(): infer V }
   ? V extends T
-    ? true
-    : V extends number | string | boolean | bigint | symbol
-    ? true
-    : false
+  ? true
+  : V extends number | string | boolean | bigint | symbol
+  ? true
+  : false
   : false;
 
 /**
@@ -3863,8 +3891,8 @@ export type ResolveFieldRefs<T> = T extends FieldRef<any, infer V>
   ? T  // Preserve functions as-is
   : T extends object
   ? IsValueType<T> extends true
-    ? T  // Preserve class instances (Date, Map, Set, Temporal, etc.) as-is
-    : { [K in keyof T]: ResolveFieldRefs<T[K]> }
+  ? T  // Preserve class instances (Date, Map, Set, Temporal, etc.) as-is
+  : { [K in keyof T]: ResolveFieldRefs<T[K]> }
   : T;
 
 /**
@@ -3873,8 +3901,8 @@ export type ResolveFieldRefs<T> = T extends FieldRef<any, infer V>
  */
 export type ResolveCollectionResults<T> = {
   [K in keyof T]: T[K] extends CollectionResult<infer TItem>
-    ? ResolveFieldRefs<TItem>[]
-    : ResolveFieldRefs<T[K]>;
+  ? ResolveFieldRefs<TItem>[]
+  : ResolveFieldRefs<T[K]>;
 };
 
 /**
@@ -4777,11 +4805,11 @@ export class CollectionQueryBuilder<TItem = any> {
     // Helper function to check if a value is a plain object (not FieldRef, SqlFragment, etc.)
     const isPlainObject = (val: any): boolean => {
       return typeof val === 'object' &&
-             val !== null &&
-             !('__dbColumnName' in val) &&
-             !(val instanceof SqlFragment) &&
-             !Array.isArray(val) &&
-             val.constructor === Object;
+        val !== null &&
+        !('__dbColumnName' in val) &&
+        !(val instanceof SqlFragment) &&
+        !Array.isArray(val) &&
+        val.constructor === Object;
     };
 
     // Helper function to recursively process fields and build SelectedField structures

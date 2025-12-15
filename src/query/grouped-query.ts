@@ -1049,8 +1049,13 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
     // Build ORDER BY clause
     let orderByClause = '';
     if (this.orderByFields.length > 0) {
+      // Look up database column names from schema
+      const colNameMap = getColumnNameMapForSchema(this.schema);
       const orderParts = this.orderByFields.map(
-        ({ field, direction }) => `"${field}" ${direction}`
+        ({ field, direction }) => {
+          const dbColumnName = colNameMap.get(field) ?? field;
+          return `"${dbColumnName}" ${direction}`;
+        }
       );
       orderByClause = `ORDER BY ${orderParts.join(', ')}`;
     }
@@ -1227,8 +1232,13 @@ export class GroupedSelectQueryBuilder<TSelection, TOriginalRow, TGroupingKey> {
     // Build ORDER BY clause
     let orderByClause = '';
     if (this.orderByFields.length > 0) {
+      // Look up database column names from schema
+      const colNameMap = getColumnNameMapForSchema(this.schema);
       const orderParts = this.orderByFields.map(
-        ({ field, direction }) => `"${field}" ${direction}`
+        ({ field, direction }) => {
+          const dbColumnName = colNameMap.get(field) ?? field;
+          return `"${dbColumnName}" ${direction}`;
+        }
       );
       orderByClause = `ORDER BY ${orderParts.join(', ')}`;
     }
