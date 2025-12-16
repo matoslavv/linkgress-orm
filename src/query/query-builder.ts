@@ -1755,7 +1755,27 @@ export class SelectQueryBuilder<TSelection> {
         for (const collection of collections) {
           const resultMap = collectionResults.get(collection.name);
           const parentId = baseRow.__pk_id;
-          const collectionData = resultMap?.get(parentId) || this.getDefaultValueForCollection(collection.builder);
+          const rawData = resultMap?.get(parentId);
+
+          // Check if this is a single result (firstOrDefault) - return first item or null
+          const isSingleResult = collection.builder.isSingleResult();
+          let collectionData: any;
+
+          if (isSingleResult) {
+            // For single results, rawData might already be an object (from temp table strategy)
+            // or might be an array (from other strategies) that we need to extract the first item from
+            if (rawData === undefined || rawData === null) {
+              collectionData = null;
+            } else if (Array.isArray(rawData)) {
+              collectionData = rawData.length > 0 ? rawData[0] : null;
+            } else {
+              // Already a single object
+              collectionData = rawData;
+            }
+          } else {
+            // For list results, ensure we return an array
+            collectionData = rawData || this.getDefaultValueForCollection(collection.builder);
+          }
 
           // Handle nested paths
           if (collection.path.length > 0) {
@@ -1935,7 +1955,27 @@ export class SelectQueryBuilder<TSelection> {
         for (const collection of collections) {
           const resultMap = collectionResults.get(collection.name);
           const parentId = baseRow.__pk_id;
-          const collectionData = resultMap?.get(parentId) || [];
+          const rawData = resultMap?.get(parentId);
+
+          // Check if this is a single result (firstOrDefault) - return first item or null
+          const isSingleResult = collection.builder.isSingleResult();
+          let collectionData: any;
+
+          if (isSingleResult) {
+            // For single results, rawData might already be an object (from temp table strategy)
+            // or might be an array (from other strategies) that we need to extract the first item from
+            if (rawData === undefined || rawData === null) {
+              collectionData = null;
+            } else if (Array.isArray(rawData)) {
+              collectionData = rawData.length > 0 ? rawData[0] : null;
+            } else {
+              // Already a single object
+              collectionData = rawData;
+            }
+          } else {
+            // For list results, ensure we return an array
+            collectionData = rawData || [];
+          }
 
           // Handle nested paths
           if (collection.path.length > 0) {
@@ -5619,6 +5659,7 @@ export class CollectionQueryBuilder<TItem = any> {
       whereParams,  // Pass WHERE clause parameters
       orderByClause,
       orderByClauseAlias,  // For json_agg ORDER BY which uses aliases
+      orderByFields: this.orderByFields.length > 0 ? this.orderByFields : undefined,  // For including ORDER BY columns in inner SELECT
       limitValue: this.limitValue,
       offsetValue: this.offsetValue,
       isDistinct: this.isDistinct,

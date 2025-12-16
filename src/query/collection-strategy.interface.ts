@@ -197,6 +197,12 @@ export interface CollectionAggregationConfig {
   orderByClauseAlias?: string;
 
   /**
+   * ORDER BY fields as individual entries (database column names and directions)
+   * Used to include ORDER BY columns in inner SELECT for window functions
+   */
+  orderByFields?: Array<{ field: string; direction: 'ASC' | 'DESC' }>;
+
+  /**
    * LIMIT value
    */
   limitValue?: number;

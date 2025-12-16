@@ -308,7 +308,7 @@ GROUP BY "__fk_${foreignKey}"
     cteName: string,
     context: QueryContext
   ): string {
-    const { selectedFields, targetTable, foreignKey, whereClause, orderByClauseAlias, isDistinct } = config;
+    const { selectedFields, targetTable, foreignKey, whereClause, orderByClauseAlias, orderByFields, isDistinct } = config;
     // Use selectorNavigationJoins for CTE (not the full navigation path)
     const navigationJoins = config.selectorNavigationJoins;
 
@@ -334,6 +334,9 @@ GROUP BY "__fk_${foreignKey}"
     // When there are navigation joins, we need to qualify unqualified field expressions
     const hasNavigationJoins = navigationJoins && navigationJoins.length > 0;
 
+    // Collect the aliases of all selected leaf fields
+    const selectedAliases = new Set(leafFields.map(f => f.alias));
+
     // Build the innermost SELECT fields
     const innerSelectFields = [
       `"${targetTable}"."${foreignKey}" as "__fk_${foreignKey}"`,
@@ -349,6 +352,22 @@ GROUP BY "__fk_${foreignKey}"
         return f.expression;
       }),
     ];
+
+    // Add ORDER BY fields if they're not already in the selected fields
+    // These are needed for the ROW_NUMBER() window function
+    if (orderByFields && orderByFields.length > 0) {
+      for (const { field } of orderByFields) {
+        // Check if this field is already selected (by alias or directly)
+        if (!selectedAliases.has(field)) {
+          // Add the ORDER BY column to the inner select so it's available for ROW_NUMBER()
+          if (hasNavigationJoins) {
+            innerSelectFields.push(`"${targetTable}"."${field}" as "${field}"`);
+          } else {
+            innerSelectFields.push(`"${field}"`);
+          }
+        }
+      }
+    }
 
     // Build ORDER BY for ROW_NUMBER() - use the alias clause (property names) since we're referencing aliased columns from inner_sub
     const rowNumberOrderBy = orderByClauseAlias || `"__fk_${foreignKey}"`;

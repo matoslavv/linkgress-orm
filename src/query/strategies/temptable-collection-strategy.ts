@@ -134,16 +134,28 @@ DROP TABLE IF EXISTS ${tempTableName};
     if (isClientSideGrouping) {
       // Client-side grouping for JSONB/array - much faster than json_agg!
       if (config.aggregationType === 'jsonb') {
-        // Group rows by parent_id and build objects
-        for (const row of result.rows) {
-          const parentId = row.parent_id;
-          if (!dataMap.has(parentId)) {
-            dataMap.set(parentId, []);
+        if (config.isSingleResult) {
+          // For firstOrDefault(), take only the first row per parent
+          for (const row of result.rows) {
+            const parentId = row.parent_id;
+            // Only set if not already set (first row wins)
+            if (!dataMap.has(parentId)) {
+              const { parent_id, ...rowData } = row;
+              dataMap.set(parentId, rowData);  // Single object, not array
+            }
           }
+        } else {
+          // Group rows by parent_id and build arrays
+          for (const row of result.rows) {
+            const parentId = row.parent_id;
+            if (!dataMap.has(parentId)) {
+              dataMap.set(parentId, []);
+            }
 
-          // Extract the actual data (everything except parent_id)
-          const { parent_id, ...rowData } = row;
-          dataMap.get(parentId)!.push(rowData);
+            // Extract the actual data (everything except parent_id)
+            const { parent_id, ...rowData } = row;
+            dataMap.get(parentId)!.push(rowData);
+          }
         }
       } else if (config.aggregationType === 'array') {
         // Group rows by parent_id and extract array field
