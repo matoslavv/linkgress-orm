@@ -269,6 +269,155 @@ describe('Basic Query Operations', () => {
         expect(alice!.activity.recentPosts).toHaveLength(2);
       });
     });
+
+    test('should select collection with nested object inside', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // Test collection items containing nested objects
+        const users = await db.users
+          .select(u => ({
+            id: u.id,
+            username: u.username,
+            posts: u.posts!.select(p => ({
+              postId: p.id,
+              meta: {
+                title: p.title,
+                views: p.views,
+              },
+            })).toList('posts'),
+          }))
+          .toList();
+
+        expect(users).toHaveLength(3);
+        users.forEach(u => {
+          expect(u).toHaveProperty('id');
+          expect(u).toHaveProperty('username');
+          expect(u).toHaveProperty('posts');
+          expect(Array.isArray(u.posts)).toBe(true);
+          u.posts.forEach((p: any) => {
+            expect(p).toHaveProperty('postId');
+            expect(p).toHaveProperty('meta');
+            expect(p.meta).toHaveProperty('title');
+            expect(p.meta).toHaveProperty('views');
+          });
+        });
+
+        // Verify Alice's posts have correct nested structure
+        const alice = users.find(u => u.username === 'alice');
+        expect(alice).toBeDefined();
+        expect(alice!.posts).toHaveLength(2);
+        expect(alice!.posts[0].meta.title).toBeDefined();
+        expect(typeof alice!.posts[0].meta.views).toBe('number');
+      });
+    });
+
+    test('should select collection with deeply nested objects inside', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // Test collection items containing deeply nested objects
+        const users = await db.users
+          .select(u => ({
+            id: u.id,
+            username: u.username,
+            posts: u.posts!.select(p => ({
+              postId: p.id,
+              content: {
+                info: {
+                  title: p.title,
+                  body: p.content,
+                },
+                stats: {
+                  views: p.views,
+                },
+              },
+            })).toList('posts'),
+          }))
+          .toList();
+
+        expect(users).toHaveLength(3);
+        users.forEach(u => {
+          expect(u).toHaveProperty('id');
+          expect(u).toHaveProperty('username');
+          expect(u).toHaveProperty('posts');
+          expect(Array.isArray(u.posts)).toBe(true);
+          u.posts.forEach((p: any) => {
+            expect(p).toHaveProperty('postId');
+            expect(p).toHaveProperty('content');
+            expect(p.content).toHaveProperty('info');
+            expect(p.content).toHaveProperty('stats');
+            expect(p.content.info).toHaveProperty('title');
+            expect(p.content.info).toHaveProperty('body');
+            expect(p.content.stats).toHaveProperty('views');
+          });
+        });
+
+        // Verify Bob's post has correct deeply nested structure
+        const bob = users.find(u => u.username === 'bob');
+        expect(bob).toBeDefined();
+        expect(bob!.posts).toHaveLength(1);
+        expect(bob!.posts[0].content.info.title).toBe('Bob Post');
+        expect(bob!.posts[0].content.info.body).toBe('Content from Bob');
+        expect(bob!.posts[0].content.stats.views).toBe(200);
+      });
+    });
+
+    test('should select with nested objects both in parent and collection items', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // Test both parent and collection items having nested objects
+        const users = await db.users
+          .select(u => ({
+            id: u.id,
+            profile: {
+              name: u.username,
+              contact: {
+                email: u.email,
+              },
+            },
+            posts: u.posts!.select(p => ({
+              postId: p.id,
+              details: {
+                title: p.title,
+                metrics: {
+                  views: p.views,
+                },
+              },
+            })).toList('posts'),
+          }))
+          .toList();
+
+        expect(users).toHaveLength(3);
+        users.forEach(u => {
+          // Check parent nested structure
+          expect(u).toHaveProperty('id');
+          expect(u).toHaveProperty('profile');
+          expect(u.profile).toHaveProperty('name');
+          expect(u.profile).toHaveProperty('contact');
+          expect(u.profile.contact).toHaveProperty('email');
+
+          // Check collection nested structure
+          expect(u).toHaveProperty('posts');
+          expect(Array.isArray(u.posts)).toBe(true);
+          u.posts.forEach((p: any) => {
+            expect(p).toHaveProperty('postId');
+            expect(p).toHaveProperty('details');
+            expect(p.details).toHaveProperty('title');
+            expect(p.details).toHaveProperty('metrics');
+            expect(p.details.metrics).toHaveProperty('views');
+          });
+        });
+
+        // Verify Alice's data
+        const alice = users.find(u => u.profile.name === 'alice');
+        expect(alice).toBeDefined();
+        expect(alice!.profile.contact.email).toBe('alice@test.com');
+        expect(alice!.posts).toHaveLength(2);
+        expect(alice!.posts[0].details.metrics.views).toBeGreaterThan(0);
+      });
+    });
   });
 
   describe('WHERE conditions', () => {
