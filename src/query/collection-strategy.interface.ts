@@ -29,6 +29,16 @@ export interface SelectedField {
     cteName: string;
     joinClause: string;  // e.g., 'LEFT JOIN "cte_0" ON "orders"."id" = "cte_0".parent_id'
   };
+  /**
+   * When this field is a nested collection (CollectionQueryBuilder),
+   * this stores info needed for recursive mapper transformation.
+   * Contains the nested collection's target table and selected field configs.
+   */
+  nestedCollectionInfo?: {
+    targetTable: string;
+    selectedFieldConfigs?: SelectedField[];
+    isSingleResult?: boolean;  // true for firstOrDefault()
+  };
 }
 
 /**

@@ -3942,6 +3942,20 @@ export class SelectQueryBuilder<TSelection> {
       }
     }
 
+    // Build cache of nested collection info (fields that are themselves nested collections)
+    // This is used for recursive transformation of nested collection results
+    const nestedCollectionCache = new Map<string, { targetTable: string; selectedFieldConfigs?: SelectedField[]; isSingleResult?: boolean }>();
+    if (selectedFieldConfigs) {
+      for (const field of selectedFieldConfigs) {
+        if (field.nestedCollectionInfo) {
+          nestedCollectionCache.set(field.alias, field.nestedCollectionInfo);
+        }
+      }
+    }
+
+    // Get schema registry for nested collection transformation
+    const schemaRegistry = collectionBuilder.getSchemaRegistry() || this.schemaRegistry;
+
     // Transform items using pre-built mapper cache
     const results: any[] = new Array(items.length);
     let i = items.length;
@@ -3954,12 +3968,119 @@ export class SelectQueryBuilder<TSelection> {
         if (mapper) {
           transformedItem[key] = mapper.fromDriver(value);
         } else {
-          transformedItem[key] = value;
+          // Check if this field is a nested collection that needs recursive transformation
+          const nestedInfo = nestedCollectionCache.get(key);
+          if (nestedInfo && value !== null && value !== undefined && schemaRegistry) {
+            transformedItem[key] = this.transformNestedCollectionValue(value, nestedInfo, schemaRegistry);
+          } else {
+            transformedItem[key] = value;
+          }
         }
       }
       results[i] = transformedItem;
     }
     return results;
+  }
+
+  /**
+   * Transform a nested collection value (from firstOrDefault or toList inside another collection)
+   * Applies custom mappers to fields within the nested collection result.
+   */
+  private transformNestedCollectionValue(
+    value: any,
+    nestedInfo: { targetTable: string; selectedFieldConfigs?: SelectedField[]; isSingleResult?: boolean },
+    schemaRegistry: Map<string, TableSchema>
+  ): any {
+    const nestedSchema = schemaRegistry.get(nestedInfo.targetTable);
+    if (!nestedSchema?.columnMetadataCache) {
+      return value;  // No schema info, return as-is
+    }
+
+    const columnCache = nestedSchema.columnMetadataCache;
+    const selectedFieldConfigs = nestedInfo.selectedFieldConfigs;
+
+    // Build mapper cache for nested collection fields
+    const mapperCache = new Map<string, any>();
+
+    // First, add mappers from selected field configs (for aliased/navigation fields)
+    if (selectedFieldConfigs) {
+      for (const field of selectedFieldConfigs) {
+        if (field.propertyName) {
+          let mapper: any = null;
+          if (field.sourceTable) {
+            // Navigation field - look up from source table's schema
+            const navSchema = schemaRegistry.get(field.sourceTable);
+            if (navSchema?.columnMetadataCache) {
+              const cached = navSchema.columnMetadataCache.get(field.propertyName);
+              if (cached?.hasMapper) {
+                mapper = cached.mapper;
+              }
+            }
+          } else {
+            // Regular field from target schema
+            const cached = columnCache.get(field.propertyName);
+            if (cached?.hasMapper) {
+              mapper = cached.mapper;
+            }
+          }
+          if (mapper) {
+            mapperCache.set(field.alias, mapper);
+          }
+        }
+      }
+    }
+
+    // Also add direct property matches from target schema
+    for (const [propertyName, cached] of columnCache) {
+      if (!mapperCache.has(propertyName) && cached.hasMapper) {
+        mapperCache.set(propertyName, cached.mapper);
+      }
+    }
+
+    // Build cache for any deeply nested collections
+    const deeplyNestedCache = new Map<string, { targetTable: string; selectedFieldConfigs?: SelectedField[]; isSingleResult?: boolean }>();
+    if (selectedFieldConfigs) {
+      for (const field of selectedFieldConfigs) {
+        if (field.nestedCollectionInfo) {
+          deeplyNestedCache.set(field.alias, field.nestedCollectionInfo);
+        }
+      }
+    }
+
+    // Transform the value(s)
+    const transformItem = (item: any): any => {
+      if (item === null || item === undefined) {
+        return item;
+      }
+      const transformedItem: any = {};
+      for (const key in item) {
+        const fieldValue = item[key];
+        const mapper = mapperCache.get(key);
+        if (mapper) {
+          transformedItem[key] = mapper.fromDriver(fieldValue);
+        } else {
+          // Check for deeply nested collections
+          const deepNestedInfo = deeplyNestedCache.get(key);
+          if (deepNestedInfo && fieldValue !== null && fieldValue !== undefined) {
+            transformedItem[key] = this.transformNestedCollectionValue(fieldValue, deepNestedInfo, schemaRegistry);
+          } else {
+            transformedItem[key] = fieldValue;
+          }
+        }
+      }
+      return transformedItem;
+    };
+
+    if (nestedInfo.isSingleResult) {
+      // Single item (firstOrDefault)
+      return transformItem(value);
+    } else if (Array.isArray(value)) {
+      // Array of items (toList)
+      return value.map(transformItem);
+    } else {
+      // Single object that should be treated as single result
+      return transformItem(value);
+    }
   }
 
   /**
@@ -4886,6 +5007,13 @@ export class CollectionQueryBuilder<TItem = any> {
   }
 
   /**
+   * Get target table name
+   */
+  getTargetTable(): string {
+    return this.targetTable;
+  }
+
+  /**
    * Get selected field configs (for mapper lookup during transformation)
    */
   getSelectedFieldConfigs(): SelectedField[] | undefined {
@@ -5285,11 +5413,26 @@ export class CollectionQueryBuilder<TItem = any> {
               cteName: nestedResult.tableName,
               joinClause: nestedJoinClause,
             },
+            // Store nested collection info for recursive mapper transformation
+            nestedCollectionInfo: {
+              targetTable: field.getTargetTable(),
+              selectedFieldConfigs: field.getSelectedFieldConfigs(),
+              isSingleResult: field.isSingleResult(),
+            },
           };
         }
 
         // The nested collection becomes a correlated subquery in SELECT
-        return { alias, expression: nestedResult.selectExpression || nestedResult.sql };
+        return {
+          alias,
+          expression: nestedResult.selectExpression || nestedResult.sql,
+          // Store nested collection info for recursive mapper transformation
+          nestedCollectionInfo: {
+            targetTable: field.getTargetTable(),
+            selectedFieldConfigs: field.getSelectedFieldConfigs(),
+            isSingleResult: field.isSingleResult(),
+          },
+        };
       } else if (typeof field === 'object' && field !== null && '__dbColumnName' in field) {
         // FieldRef object - use database column name with optional table alias
         const dbColumnName = (field as any).__dbColumnName;
