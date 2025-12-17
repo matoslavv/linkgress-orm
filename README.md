@@ -19,6 +19,7 @@ A type-safe ORM for PostgreSQL and TypeScript with automatic type inference and 
 - **Nested Collection Queries** - Query one-to-many relationships with CTE, LATERAL, or temp table strategies
 - **Type-Safe Aggregations** - `count()`, `sum()`, `max()`, `min()` return proper types
 - **Powerful Filtering** - Type-checked query conditions
+- **Prepared Statements** - Build queries once, execute many times with named placeholders
 - **Fluent Update/Delete** - Chain `.where().update()` and `.where().delete()` with RETURNING support
 - **Transaction Support** - Safe, type-checked transactions
 - **Multiple Clients** - Works with both `pg` and `postgres` npm packages

@@ -156,6 +156,23 @@ export type UnwrapSelection<T> = T extends SqlFragment<infer V>
 export interface SqlBuildContext {
   paramCounter: number;
   params: any[];
+  /** Map of placeholder names to their parameter indices (for prepared statements) */
+  placeholders?: Map<string, number>;
+}
+
+/**
+ * Placeholder for named parameters in prepared statements
+ * Used with sql.placeholder() to create reusable parameterized queries
+ *
+ * @example
+ * const query = db.users
+ *   .where(u => eq(u.id, sql.placeholder('userId')))
+ *   .prepare('getUserById');
+ *
+ * await query.execute({ userId: 10 });
+ */
+export class Placeholder<TName extends string = string> {
+  constructor(public readonly name: TName) {}
 }
 
 /**
@@ -213,11 +230,28 @@ export abstract class WhereConditionBase {
   /**
    * Helper to get the right-hand side of a comparison
    * Returns either a column reference or a parameter placeholder
-   * @param value The value to process (field reference or literal)
+   * @param value The value to process (field reference, literal, or placeholder)
    * @param context The SQL build context
    * @param sourceField Optional source field that may contain a mapper for toDriver transformation
    */
-  protected getRightSide<V>(value: FieldLike<V> | V, context: SqlBuildContext, sourceField?: FieldLike<V> | string): string {
+  protected getRightSide<V>(value: FieldLike<V> | V | Placeholder<any>, context: SqlBuildContext, sourceField?: FieldLike<V> | string): string {
+    // Check if value is a named placeholder for prepared statements
+    if (value instanceof Placeholder) {
+      // Track placeholder name and its parameter index
+      if (!context.placeholders) context.placeholders = new Map();
+
+      // Check if this placeholder was already encountered
+      const existingIndex = context.placeholders.get(value.name);
+      if (existingIndex !== undefined) {
+        // Reuse the same parameter index for duplicate placeholder names
+        return `$${existingIndex}`;
+      }
+
+      // First occurrence - assign new parameter index
+      context.placeholders.set(value.name, context.paramCounter);
+      return `$${context.paramCounter++}`;
+    }
+
     if (this.isFieldRef(value)) {
       // Value is a field reference, use it with table alias if present
       if ('__tableAlias' in value && (value as any).__tableAlias) {
@@ -246,7 +280,7 @@ export abstract class WhereConditionBase {
 export abstract class WhereComparisonBase<V = any> extends WhereConditionBase {
   constructor(
     protected field: FieldLike<V> | string,
-    protected value?: FieldLike<V> | V
+    protected value?: FieldLike<V> | V | Placeholder<any>
   ) {
     super();
   }
@@ -551,56 +585,56 @@ export type Condition = WhereConditionBase;
 
 export function eq<T extends string, V>(
   field: FieldLike<V> | T | undefined,
-  value: FieldLike<V> | V | undefined
+  value: FieldLike<V> | V | Placeholder<any> | undefined
 ): Condition {
   return new EqComparison<V>(field!, value!);
 }
 
 export function ne<T extends string, V>(
   field: FieldLike<V> | T | undefined,
-  value: FieldLike<V> | V | undefined
+  value: FieldLike<V> | V | Placeholder<any> | undefined
 ): Condition {
   return new NeComparison<V>(field!, value!);
 }
 
 export function gt<T extends string, V>(
   field: FieldLike<V> | T | undefined,
-  value: FieldLike<V> | V | undefined
+  value: FieldLike<V> | V | Placeholder<any> | undefined
 ): Condition {
   return new GtComparison<V>(field!, value!);
 }
 
 export function gte<T extends string, V>(
   field: FieldLike<V> | T | undefined,
-  value: FieldLike<V> | V | undefined
+  value: FieldLike<V> | V | Placeholder<any> | undefined
 ): Condition {
   return new GteComparison<V>(field!, value!);
 }
 
 export function lt<T extends string, V>(
   field: FieldLike<V> | T | undefined,
-  value: FieldLike<V> | V | undefined
+  value: FieldLike<V> | V | Placeholder<any> | undefined
 ): Condition {
   return new LtComparison<V>(field!, value!);
 }
 
 export function lte<T extends string, V>(
   field: FieldLike<V> | T | undefined,
-  value: FieldLike<V> | V | undefined
+  value: FieldLike<V> | V | Placeholder<any> | undefined
 ): Condition {
   return new LteComparison<V>(field!, value!);
 }
 
 export function like<T extends string>(
   field: FieldLike<string> | T | undefined,
-  value: FieldLike<string> | string | undefined
+  value: FieldLike<string> | string | Placeholder<any> | undefined
 ): Condition {
   return new LikeComparison(field!, value!);
 }
 
 export function ilike<T extends string>(
   field: FieldLike<string> | T | undefined,
-  value: FieldLike<string> | string | undefined
+  value: FieldLike<string> | string | Placeholder<any> | undefined
 ): Condition {
   return new ILikeComparison(field!, value!);
 }
@@ -942,6 +976,21 @@ export class SqlFragment<TValueType = any> extends WhereConditionBase {
         if (this.isRawSql(value)) {
           sql += value.value;
         }
+        // Check if value is a named placeholder for prepared statements
+        else if (value instanceof Placeholder) {
+          if (!context.placeholders) context.placeholders = new Map();
+
+          // Check if this placeholder was already encountered
+          const existingIndex = context.placeholders.get(value.name);
+          if (existingIndex !== undefined) {
+            // Reuse the same parameter index for duplicate placeholder names
+            sql += `$${existingIndex}`;
+          } else {
+            // First occurrence - assign new parameter index
+            context.placeholders.set(value.name, context.paramCounter);
+            sql += `$${context.paramCounter++}`;
+          }
+        }
         // Check if value is a FieldRef
         else if (this.isFieldRef(value)) {
           // It's a field reference - use the database column name with table alias if present
@@ -1082,11 +1131,27 @@ function join<T = any>(fragments: SqlFragment<T>[], separator: SqlFragment<any> 
   return new SqlFragment<T>(parts, values);
 }
 
+/**
+ * Create a named placeholder for prepared statements
+ * The placeholder will be replaced with a parameter when the query is executed
+ *
+ * @example
+ * const query = db.users
+ *   .where(u => eq(u.id, sql.placeholder('userId')))
+ *   .prepare('getUserById');
+ *
+ * await query.execute({ userId: 10 });
+ */
+function placeholder<TName extends string>(name: TName): Placeholder<TName> {
+  return new Placeholder(name);
+}
+
 // Create the sql function with additional methods
 export const sql = Object.assign(sqlTemplate, {
   raw,
   empty,
   join,
+  placeholder,
 });
 
 // ============================================================================
@@ -1094,13 +1159,18 @@ export const sql = Object.assign(sqlTemplate, {
 // ============================================================================
 
 export class ConditionBuilder {
-  build(condition: Condition, startParam: number = 1): { sql: string; params: any[] } {
+  build(
+    condition: Condition,
+    startParam: number = 1,
+    placeholders?: Map<string, number>
+  ): { sql: string; params: any[]; placeholders?: Map<string, number>; paramCounter: number } {
     const context: SqlBuildContext = {
       paramCounter: startParam,
       params: [],
+      placeholders,
     };
 
     const sql = condition.buildSql(context);
-    return { sql, params: context.params };
+    return { sql, params: context.params, placeholders: context.placeholders, paramCounter: context.paramCounter };
   }
 }

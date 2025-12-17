@@ -762,6 +762,213 @@ const postsWithTotal = await db.posts
   .toList();
 ```
 
+## Prepared Statements
+
+Prepared statements allow you to build a query once and execute it multiple times with different parameter values. This is useful for:
+- **Query building optimization** - Build SQL once, execute many times
+- **Type-safe placeholders** - Named parameters with validation
+- **Developer ergonomics** - Cleaner API for reusable queries
+
+### Basic Usage
+
+Create a prepared query using `sql.placeholder()` and `.prepare()`:
+
+```typescript
+import { eq, sql } from 'linkgress-orm';
+
+// Create a prepared query with a named placeholder
+const getUserById = db.users
+  .where(u => eq(u.id, sql.placeholder('userId')))
+  .prepare('getUserById');
+
+// Execute with different values
+const alice = await getUserById.execute({ userId: 1 });
+const bob = await getUserById.execute({ userId: 2 });
+const charlie = await getUserById.execute({ userId: 3 });
+```
+
+### Multiple Placeholders
+
+Use multiple placeholders for complex queries:
+
+```typescript
+import { and, gt, lt, sql } from 'linkgress-orm';
+
+const searchUsers = db.users
+  .where(u => and(
+    gt(u.age, sql.placeholder('minAge')),
+    lt(u.age, sql.placeholder('maxAge'))
+  ))
+  .orderBy(u => u.username)
+  .prepare('searchUsers');
+
+// Find users aged 20-40
+const youngAdults = await searchUsers.execute({ minAge: 20, maxAge: 40 });
+
+// Find users aged 40-60
+const middleAged = await searchUsers.execute({ minAge: 40, maxAge: 60 });
+```
+
+### With Select Projections
+
+Prepared queries work with custom projections:
+
+```typescript
+const getUserProfile = db.users
+  .select(u => ({
+    id: u.id,
+    username: u.username,
+    email: u.email,
+  }))
+  .where(u => eq(u.id, sql.placeholder('userId')))
+  .prepare('getUserProfile');
+
+const profile = await getUserProfile.execute({ userId: 10 });
+// Result type: Array<{ id: number; username: string; email: string }>
+```
+
+### Placeholders in Collections
+
+Use placeholders within nested collection queries:
+
+```typescript
+const getUserHighViewPosts = db.users
+  .select(u => ({
+    id: u.id,
+    username: u.username,
+    highViewPosts: u.posts!
+      .where(p => gt(p.views!, sql.placeholder('minViews')))
+      .select(p => ({
+        title: p.title,
+        views: p.views,
+      }))
+      .toList(),
+  }))
+  .where(u => eq(u.id, sql.placeholder('userId')))
+  .prepare('getUserHighViewPosts');
+
+// Get alice's posts with over 100 views
+const result = await getUserHighViewPosts.execute({ userId: 1, minViews: 100 });
+```
+
+### Placeholders in Subqueries
+
+Prepared statements also work with subqueries:
+
+```typescript
+import { gte, inSubquery, sql } from 'linkgress-orm';
+
+// Find users who have posts with views >= minViews
+const postsSubquery = db.posts
+  .where(p => gte(p.views!, sql.placeholder('minViews')))
+  .select(p => p.userId)
+  .asSubquery('array');
+
+const usersWithHighViewPosts = db.users
+  .where(u => inSubquery(u.id, postsSubquery))
+  .orderBy(u => u.username)
+  .prepare('usersWithHighViewPosts');
+
+const result = await usersWithHighViewPosts.execute({ minViews: 100 });
+```
+
+### Reusing Same Placeholder Name
+
+When the same placeholder name is used multiple times in a query, it references the same parameter value:
+
+```typescript
+const searchByAge = db.users
+  .where(u => or(
+    eq(u.age, sql.placeholder('targetAge')),      // Uses same parameter
+    gt(u.age, sql.placeholder('targetAge'))       // Uses same parameter
+  ))
+  .prepare('searchByAge');
+
+// Both conditions use targetAge = 35
+const result = await searchByAge.execute({ targetAge: 35 });
+```
+
+### PreparedQuery Utilities
+
+Access information about prepared queries:
+
+```typescript
+const prepared = db.users
+  .where(u => and(
+    eq(u.id, sql.placeholder('userId')),
+    gt(u.age, sql.placeholder('minAge'))
+  ))
+  .prepare('myQuery');
+
+// Get the SQL string (for debugging)
+console.log(prepared.getSql());
+// SELECT ... FROM "users" WHERE "id" = $1 AND "age" > $2
+
+// Get placeholder names
+console.log(prepared.getPlaceholderNames());
+// ['userId', 'minAge']
+
+// Query name
+console.log(prepared.name);
+// 'myQuery'
+```
+
+### Error Handling
+
+If a required placeholder parameter is missing, an error is thrown:
+
+```typescript
+const getUserById = db.users
+  .where(u => eq(u.id, sql.placeholder('userId')))
+  .prepare('getUserById');
+
+// This throws an error: "Missing parameter: userId"
+await getUserById.execute({});
+```
+
+### Complex Example
+
+Here's a comprehensive example combining multiple features:
+
+```typescript
+import { and, gt, like, or, sql } from 'linkgress-orm';
+
+// Complex search with multiple optional filters
+const advancedSearch = db.users
+  .where(u => or(
+    and(
+      gt(u.age, sql.placeholder('minAge')),
+      lt(u.age, sql.placeholder('maxAge'))
+    ),
+    like(u.username, sql.placeholder('usernamePattern'))
+  ))
+  .select(u => ({
+    id: u.id,
+    username: u.username,
+    age: u.age,
+    postCount: u.posts!.count(),
+    recentPosts: u.posts!
+      .where(p => gt(p.views!, sql.placeholder('minViews')))
+      .orderBy(p => [[p.createdAt, 'DESC']])
+      .limit(5)
+      .select(p => ({
+        title: p.title,
+        views: p.views,
+      }))
+      .toList(),
+  }))
+  .orderBy(u => u.username)
+  .prepare('advancedSearch');
+
+// Execute with specific parameters
+const results = await advancedSearch.execute({
+  minAge: 25,
+  maxAge: 45,
+  usernamePattern: 'a%',
+  minViews: 50,
+});
+```
+
 ## Performance Tips
 
 ### Use Select Projections
@@ -969,6 +1176,7 @@ async function getDashboardStats(userId: number) {
 - [Subquery Guide](./subquery-guide.md) - Advanced subquery patterns
 - [CTE Guide](./CTE-GUIDE.md) - Common Table Expressions
 - [Schema Configuration](./schema-configuration.md) - Define entities and relationships
+- [Prepared Statements](#prepared-statements) - Reusable parameterized queries
 
 ## License
 

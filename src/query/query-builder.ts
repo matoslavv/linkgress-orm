@@ -1,4 +1,5 @@
-import { Condition, ConditionBuilder, SqlFragment, SqlBuildContext, FieldRef, UnwrapSelection, and as andCondition } from './conditions';
+import { Condition, ConditionBuilder, SqlFragment, SqlBuildContext, FieldRef, UnwrapSelection, and as andCondition, Placeholder } from './conditions';
+import { PreparedQuery } from './prepared-query';
 import { TableSchema } from '../schema/table-builder';
 import type { QueryExecutor, CollectionStrategyType, OrderDirection, OrderByResult, FluentDelete, FluentQueryUpdate } from '../entity/db-context';
 import { TimeTracer } from '../entity/db-context';
@@ -157,6 +158,8 @@ export interface QueryContext {
   allParams: any[];
   collectionStrategy?: CollectionStrategyType;
   executor?: QueryExecutor;
+  /** Map of placeholder names to their parameter indices (for prepared statements) */
+  placeholders?: Map<string, number>;
 }
 
 /**
@@ -2246,6 +2249,90 @@ export class SelectQueryBuilder<TSelection> {
   }
 
   /**
+   * Create a prepared query for efficient reusable parameterized execution.
+   *
+   * Prepared queries build the SQL once and allow multiple executions
+   * with different parameter values. This is useful for:
+   * 1. Query building optimization - Build SQL once, execute many times
+   * 2. Type-safe placeholders - Named parameters with validation
+   * 3. Developer ergonomics - Cleaner API for reusable queries
+   *
+   * @param name - A name for the prepared query (for debugging)
+   * @returns PreparedQuery that can be executed multiple times with different parameters
+   *
+   * @example
+   * ```typescript
+   * // Create a prepared query with a placeholder
+   * const getUserById = db.users
+   *   .where(u => eq(u.id, sql.placeholder('userId')))
+   *   .prepare('getUserById');
+   *
+   * // Execute multiple times with different values
+   * const user1 = await getUserById.execute({ userId: 10 });
+   * const user2 = await getUserById.execute({ userId: 20 });
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Multiple placeholders
+   * const searchUsers = db.users
+   *   .where(u => and(
+   *     gt(u.age, sql.placeholder('minAge')),
+   *     like(u.name, sql.placeholder('namePattern'))
+   *   ))
+   *   .prepare('searchUsers');
+   *
+   * await searchUsers.execute({ minAge: 18, namePattern: '%john%' });
+   * ```
+   */
+  prepare<TParams extends Record<string, any> = Record<string, any>>(
+    name: string
+  ): PreparedQuery<ResolveCollectionResults<TSelection>, TParams> {
+    // Build query with placeholder tracking
+    const context: QueryContext = {
+      ctes: new Map(),
+      cteCounter: 0,
+      paramCounter: 1,
+      allParams: [],
+      placeholders: new Map(),
+      collectionStrategy: this.collectionStrategy,
+      executor: this.executor,
+    };
+
+    // Analyze the selector to extract nested queries
+    const mockRow = this._createMockRow();
+    const selectionResult = this.selector(mockRow);
+
+    // Build the query - this populates context.placeholders
+    const { sql, nestedPaths } = this.buildQuery(selectionResult, context);
+
+    // Create transform function (closure over schema, selection, nestedPaths)
+    const transformFn = (rows: any[]): ResolveCollectionResults<TSelection>[] => {
+      // If rawResult is enabled, return raw rows without any processing
+      if (this.executor?.getOptions().rawResult) {
+        return rows as any;
+      }
+
+      // Reconstruct nested objects from flat row data (if any)
+      if (nestedPaths.size > 0) {
+        rows = rows.map(row => this.reconstructNestedObjects(row, nestedPaths));
+      }
+
+      // Transform results
+      return this.transformResults(rows, selectionResult) as any;
+    };
+
+    return new PreparedQuery(
+      sql,
+      context.placeholders || new Map(),
+      context.paramCounter - 1,
+      this.client,
+      transformFn,
+      name
+    );
+  }
+
+  /**
    * Delete records matching the current WHERE condition
    * Returns a fluent builder that can be awaited directly or chained with .returning()
    *
@@ -3517,10 +3604,14 @@ export class SelectQueryBuilder<TSelection> {
     let whereClause = '';
     if (this.whereCond) {
       const condBuilder = new ConditionBuilder();
-      const { sql, params } = condBuilder.build(this.whereCond, context.paramCounter);
+      const { sql, params, placeholders, paramCounter: newParamCounter } = condBuilder.build(this.whereCond, context.paramCounter, context.placeholders);
       whereClause = `WHERE ${sql}`;
-      context.paramCounter += params.length;
+      context.paramCounter = newParamCounter;  // Use returned counter (handles both params and placeholders)
       context.allParams.push(...params);
+      // Update placeholders from the condition builder (for prepared statements)
+      if (placeholders) {
+        context.placeholders = placeholders;
+      }
     }
 
     // Build ORDER BY clause
@@ -3587,9 +3678,12 @@ export class SelectQueryBuilder<TSelection> {
 
       // Build ON condition
       const condBuilder = new ConditionBuilder();
-      const { sql: condSql, params: condParams } = condBuilder.build(manualJoin.condition, context.paramCounter);
-      context.paramCounter += condParams.length;
+      const { sql: condSql, params: condParams, placeholders: joinPlaceholders, paramCounter: newParamCounter } = condBuilder.build(manualJoin.condition, context.paramCounter, context.placeholders);
+      context.paramCounter = newParamCounter;  // Use returned counter (handles both params and placeholders)
       context.allParams.push(...condParams);
+      if (joinPlaceholders) {
+        context.placeholders = joinPlaceholders;
+      }
 
       // Check if this is a CTE join
       if (manualJoin.cte) {
@@ -4215,10 +4309,13 @@ export class SelectQueryBuilder<TSelection> {
     let whereClause = '';
     if (this.whereCond) {
       const condBuilder = new ConditionBuilder();
-      const { sql, params } = condBuilder.build(this.whereCond, context.paramCounter);
+      const { sql, params, placeholders, paramCounter: newParamCounter } = condBuilder.build(this.whereCond, context.paramCounter, context.placeholders);
       whereClause = `WHERE ${sql}`;
-      context.paramCounter += params.length;
+      context.paramCounter = newParamCounter;  // Use returned counter (handles both params and placeholders)
       context.allParams.push(...params);
+      if (placeholders) {
+        context.placeholders = placeholders;
+      }
     }
 
     // Build FROM clause with JOINs
@@ -4228,9 +4325,12 @@ export class SelectQueryBuilder<TSelection> {
     for (const manualJoin of this.manualJoins) {
       const joinTypeStr = manualJoin.type === 'INNER' ? 'INNER JOIN' : 'LEFT JOIN';
       const condBuilder = new ConditionBuilder();
-      const { sql: condSql, params: condParams } = condBuilder.build(manualJoin.condition, context.paramCounter);
-      context.paramCounter += condParams.length;
+      const { sql: condSql, params: condParams, placeholders: joinPlaceholders, paramCounter: newJoinParamCounter } = condBuilder.build(manualJoin.condition, context.paramCounter, context.placeholders);
+      context.paramCounter = newJoinParamCounter;  // Use returned counter (handles both params and placeholders)
       context.allParams.push(...condParams);
+      if (joinPlaceholders) {
+        context.placeholders = joinPlaceholders;
+      }
 
       // Check if this is a subquery join
       if ((manualJoin as any).isSubquery && (manualJoin as any).subquery) {
@@ -4262,10 +4362,13 @@ export class SelectQueryBuilder<TSelection> {
     let whereClause = '';
     if (this.whereCond) {
       const condBuilder = new ConditionBuilder();
-      const { sql, params } = condBuilder.build(this.whereCond, context.paramCounter);
+      const { sql, params, placeholders, paramCounter: newParamCounter } = condBuilder.build(this.whereCond, context.paramCounter, context.placeholders);
       whereClause = `WHERE ${sql}`;
-      context.paramCounter += params.length;
+      context.paramCounter = newParamCounter;  // Use returned counter (handles both params and placeholders)
       context.allParams.push(...params);
+      if (placeholders) {
+        context.placeholders = placeholders;
+      }
     }
 
     // Build FROM clause with JOINs
@@ -4275,9 +4378,12 @@ export class SelectQueryBuilder<TSelection> {
     for (const manualJoin of this.manualJoins) {
       const joinTypeStr = manualJoin.type === 'INNER' ? 'INNER JOIN' : 'LEFT JOIN';
       const condBuilder = new ConditionBuilder();
-      const { sql: condSql, params: condParams } = condBuilder.build(manualJoin.condition, context.paramCounter);
-      context.paramCounter += condParams.length;
+      const { sql: condSql, params: condParams, placeholders: joinPlaceholders, paramCounter: newJoinParamCounter } = condBuilder.build(manualJoin.condition, context.paramCounter, context.placeholders);
+      context.paramCounter = newJoinParamCounter;  // Use returned counter (handles both params and placeholders)
       context.allParams.push(...condParams);
+      if (joinPlaceholders) {
+        context.placeholders = joinPlaceholders;
+      }
 
       // Check if this is a subquery join
       if ((manualJoin as any).isSubquery && (manualJoin as any).subquery) {
@@ -4328,12 +4434,13 @@ export class SelectQueryBuilder<TSelection> {
   ): Subquery<TMode extends 'scalar' ? ResolveFieldRefs<TSelection> : TMode extends 'array' ? ResolveFieldRefs<TSelection>[] : ResolveCollectionResults<TSelection>, TMode> {
     // Create a function that builds the subquery SQL when called
     const sqlBuilder = (outerContext: SqlBuildContext & { tableAlias?: string }): string => {
-      // Create a fresh context for this subquery
+      // Create a fresh context for this subquery, inheriting placeholders from outer context
       const context: QueryContext = {
         ctes: new Map(),
         cteCounter: 0,
         paramCounter: outerContext.paramCounter,
         allParams: outerContext.params,
+        placeholders: outerContext.placeholders,  // Pass placeholders through for prepared statements
         executor: this.executor,
       };
 
@@ -5405,6 +5512,7 @@ export class CollectionQueryBuilder<TItem = any> {
         const sqlBuildContext = {
           paramCounter: context.paramCounter,
           params: context.allParams,
+          placeholders: context.placeholders,  // Pass placeholders for prepared statements
         };
         const fragmentSql = field.buildSql(sqlBuildContext);
         context.paramCounter = sqlBuildContext.paramCounter;
@@ -5554,12 +5662,15 @@ export class CollectionQueryBuilder<TItem = any> {
     let whereParams: any[] | undefined;
     if (this.whereCond) {
       const condBuilder = new ConditionBuilder();
-      const { sql, params } = condBuilder.build(this.whereCond, context.paramCounter);
+      const { sql, params, placeholders, paramCounter: newParamCounter } = condBuilder.build(this.whereCond, context.paramCounter, context.placeholders);
       whereClause = sql;
       whereParams = params;
-      context.paramCounter += params.length;
+      context.paramCounter = newParamCounter;  // Use returned counter (handles both params and placeholders)
       localParams.push(...params);
       context.allParams.push(...params);
+      if (placeholders) {
+        context.placeholders = placeholders;
+      }
     }
 
     // Step 3: Build ORDER BY clauses SQL (without ORDER BY keyword)

@@ -6,6 +6,7 @@ import { DbModelConfig } from './model-config';
 import { JoinQueryBuilder } from '../query/join-builder';
 import { Condition, ConditionBuilder, SqlFragment, UnwrapSelection, FieldRef } from '../query/conditions';
 import { ResolveCollectionResults, CollectionQueryBuilder, ReferenceQueryBuilder, SelectQueryBuilder, QueryBuilder } from '../query/query-builder';
+import { PreparedQuery } from '../query/prepared-query';
 import { InferRowType } from '../schema/row-type';
 import { DbSchemaManager } from '../migration/db-schema-manager';
 import { DbSequence, SequenceConfig } from '../schema/sequence-builder';
@@ -1735,6 +1736,13 @@ export interface IEntityQueryable<TEntity extends DbEntity> {
    * Returns a fluent builder that can be awaited directly or chained with .returning()
    */
   update(data: Partial<InsertData<TEntity>>): FluentQueryUpdate<UnwrapDbColumns<TEntity>>;
+
+  /**
+   * Create a prepared query for efficient reusable parameterized execution
+   */
+  prepare<TParams extends Record<string, any> = Record<string, any>>(
+    name: string
+  ): PreparedQuery<UnwrapDbColumns<TEntity>, TParams>;
 }
 
 /**
@@ -1841,6 +1849,13 @@ export interface EntitySelectQueryBuilder<TEntity extends DbEntity, TSelection> 
   first(): Promise<ResolveCollectionResults<TSelection>>;
 
   firstOrDefault(): Promise<ResolveCollectionResults<TSelection> | null>;
+
+  /**
+   * Create a prepared query for efficient reusable parameterized execution
+   */
+  prepare<TParams extends Record<string, any> = Record<string, any>>(
+    name: string
+  ): PreparedQuery<ResolveCollectionResults<TSelection>, TParams>;
 }
 
 /**
@@ -2387,6 +2402,29 @@ export class DbEntityTable<TEntity extends DbEntity> {
       .where(condition as any)
       .select(allColumnsSelector);
     return queryBuilder as any as IEntityQueryable<TEntity>;
+  }
+
+  /**
+   * Create a prepared query for efficient reusable parameterized execution.
+   * Since DbEntityTable represents all records (no WHERE clause), this returns
+   * a prepared query that selects all records. Use where() first for filtering.
+   */
+  prepare<TParams extends Record<string, any> = Record<string, any>>(
+    name: string
+  ): PreparedQuery<UnwrapDbColumns<TEntity>, TParams> {
+    const schema = this._getSchema();
+
+    // Create a selector that selects all columns
+    const allColumnsSelector = (e: any) => {
+      const result: any = {};
+      for (const colName of Object.keys(schema.columns)) {
+        result[colName] = e[colName];
+      }
+      return result;
+    };
+
+    const queryBuilder = this.context.getTable(this.tableName).select(allColumnsSelector);
+    return (queryBuilder as any).prepare(name);
   }
 
   /**

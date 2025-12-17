@@ -41,6 +41,11 @@ export {
   CollectionQueryBuilder,
 } from './query/query-builder';
 
+// Prepared statements
+export {
+  PreparedQuery,
+} from './query/prepared-query';
+
 export {
   GroupedQueryBuilder,
   GroupedSelectQueryBuilder,
@@ -62,6 +67,7 @@ export {
   SqlFragment,
   RawSql,
   FieldRef,
+  Placeholder,
   eq,
   ne,
   gt,
