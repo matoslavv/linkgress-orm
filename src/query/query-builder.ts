@@ -160,6 +160,12 @@ export interface QueryContext {
   executor?: QueryExecutor;
   /** Map of placeholder names to their parameter indices (for prepared statements) */
   placeholders?: Map<string, number>;
+  /**
+   * Map of original table names to their LATERAL aliases.
+   * Used by nested LATERALs to reference parent collection tables correctly.
+   * Example: { "posts": "lateral_0_posts" }
+   */
+  lateralTableAliasMap?: Map<string, string>;
 }
 
 /**
@@ -4933,7 +4939,10 @@ export class CollectionQueryBuilder<TItem = any> {
       const fieldRefCache: Record<string, any> = {};
 
       // Add columns - include tableAlias for unambiguous column references in WHERE clauses
-      const tableAlias = this.targetTable;
+      // Use a special marker alias for the collection's own table that can be rewritten later
+      // This allows distinguishing between outer table references and inner collection references
+      // when both target the same table (e.g., post.user.posts where both are "posts" table)
+      const tableAlias = `__collection_${this.targetTable}__`;
       for (const [colName, dbColumnName] of columnNameMap) {
         Object.defineProperty(mock, colName, {
           get() {
@@ -5491,6 +5500,22 @@ export class CollectionQueryBuilder<TItem = any> {
     const strategyType: CollectionStrategyType = context.collectionStrategy || 'lateral';
     const strategy = CollectionStrategyFactory.getStrategy(strategyType);
 
+    // For LATERAL strategy, reserve the counter early and register the table alias
+    // This allows nested collections to reference this collection's aliased table
+    let reservedCounter: number | undefined;
+    if (strategyType === 'lateral') {
+      reservedCounter = context.cteCounter++;
+      const lateralAlias = `lateral_${reservedCounter}`;
+      const innerTableAlias = `${lateralAlias}_${this.relationName}`;
+
+      // Initialize the map if needed
+      if (!context.lateralTableAliasMap) {
+        context.lateralTableAliasMap = new Map();
+      }
+      // Register this collection's table alias for nested collections to reference
+      context.lateralTableAliasMap.set(this.targetTable, innerTableAlias);
+    }
+
     // Build selected fields configuration (supports nested objects)
     const selectedFieldConfigs: SelectedField[] = [];
     const localParams: any[] = [];
@@ -5587,8 +5612,10 @@ export class CollectionQueryBuilder<TItem = any> {
         const tableAlias = (field as any).__tableAlias;
         const fieldName = (field as any).__fieldName;  // Property name for mapper lookup
         const sourceTable = (field as any).__sourceTable;  // Actual table name for schema lookup
-        // If tableAlias differs from the target table, it's a navigation property reference
-        if (tableAlias && tableAlias !== this.targetTable) {
+        // If tableAlias differs from the target table (or its collection marker), it's a navigation property reference
+        // The collection marker is `__collection_tableName__` and should be treated as the target table
+        const collectionMarker = `__collection_${this.targetTable}__`;
+        if (tableAlias && tableAlias !== this.targetTable && tableAlias !== collectionMarker) {
           return { alias, expression: `"${tableAlias}"."${dbColumnName}"`, propertyName: fieldName, sourceTable };
         }
         return { alias, expression: `"${dbColumnName}"`, propertyName: fieldName };
@@ -5779,7 +5806,8 @@ export class CollectionQueryBuilder<TItem = any> {
       aggregateField,
       arrayField,
       defaultValue,
-      counter: context.cteCounter++,
+      // Use the reserved counter for LATERAL strategy, otherwise increment as before
+      counter: reservedCounter !== undefined ? reservedCounter : context.cteCounter++,
       navigationJoins: allNavigationJoins.length > 0 ? allNavigationJoins : undefined,
       selectorNavigationJoins: navigationJoins.length > 0 ? navigationJoins : undefined,
     };

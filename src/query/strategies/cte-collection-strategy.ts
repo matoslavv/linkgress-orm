@@ -211,14 +211,23 @@ export class CteCollectionStrategy implements ICollectionStrategy {
     // Use selectorNavigationJoins which contains only the joins detected from the selector.
     const navigationJoins = config.selectorNavigationJoins;
 
+    // Helper to rewrite the collection marker alias to the actual table name
+    // For CTE, we use the actual table name in FROM (no aliasing), so marker becomes table name
+    const rewriteCollectionMarker = (expr: string | undefined): string | undefined => {
+      if (!expr) return expr;
+      const markerPattern = new RegExp(`"__collection_${targetTable}__"`, 'g');
+      return expr.replace(markerPattern, `"${targetTable}"`);
+    };
+
     // Collect all leaf fields for the SELECT clause
     const leafFields = this.collectLeafFields(selectedFields);
 
     // Build the JSONB fields for json_build_object (handles nested structures)
     const jsonbObjectExpr = this.buildJsonbObject(selectedFields);
 
-    // Build WHERE clause
-    const whereSQL = whereClause ? `WHERE ${whereClause}` : '';
+    // Build WHERE clause (rewrite collection markers)
+    const rewrittenWhereClause = rewriteCollectionMarker(whereClause);
+    const whereSQL = rewrittenWhereClause ? `WHERE ${rewrittenWhereClause}` : '';
 
     // Build DISTINCT clause
     const distinctClause = isDistinct ? 'DISTINCT ' : '';
@@ -245,18 +254,20 @@ export class CteCollectionStrategy implements ICollectionStrategy {
     const allSelectFields = [
       `"${targetTable}"."${foreignKey}" as "__fk_${foreignKey}"`,
       ...leafFields.map(f => {
+        // Rewrite collection marker in expression to actual table name
+        const rewrittenExpr = rewriteCollectionMarker(f.expression) || f.expression;
         // If expression is just a quoted column name (e.g., `"id"`), qualify it with target table
         // But if it's already qualified (e.g., `"user"."username"`), leave it as is
-        const isSimpleColumn = /^"[^".]+"$/.test(f.expression);
+        const isSimpleColumn = /^"[^".]+"$/.test(rewrittenExpr);
         if (isSimpleColumn && hasNavigationJoins) {
           // Extract column name and qualify with target table
-          const columnName = f.expression.slice(1, -1); // Remove quotes
+          const columnName = rewrittenExpr.slice(1, -1); // Remove quotes
           return `"${targetTable}"."${columnName}" as "${f.alias}"`;
         }
-        if (f.expression !== `"${f.alias}"`) {
-          return `${f.expression} as "${f.alias}"`;
+        if (rewrittenExpr !== `"${f.alias}"`) {
+          return `${rewrittenExpr} as "${f.alias}"`;
         }
-        return f.expression;
+        return rewrittenExpr;
       }),
     ];
 
@@ -312,14 +323,22 @@ GROUP BY "__fk_${foreignKey}"
     // Use selectorNavigationJoins for CTE (not the full navigation path)
     const navigationJoins = config.selectorNavigationJoins;
 
+    // Helper to rewrite the collection marker alias to the actual table name
+    const rewriteCollectionMarker = (expr: string | undefined): string | undefined => {
+      if (!expr) return expr;
+      const markerPattern = new RegExp(`"__collection_${targetTable}__"`, 'g');
+      return expr.replace(markerPattern, `"${targetTable}"`);
+    };
+
     // Collect all leaf fields for the SELECT clause
     const leafFields = this.collectLeafFields(selectedFields);
 
     // Build the JSONB fields for json_build_object (handles nested structures)
     const jsonbObjectExpr = this.buildJsonbObject(selectedFields);
 
-    // Build WHERE clause
-    const whereSQL = whereClause ? `WHERE ${whereClause}` : '';
+    // Build WHERE clause (rewrite collection markers)
+    const rewrittenWhereClause = rewriteCollectionMarker(whereClause);
+    const whereSQL = rewrittenWhereClause ? `WHERE ${rewrittenWhereClause}` : '';
 
     // Build DISTINCT clause
     const distinctClause = isDistinct ? 'DISTINCT ' : '';
@@ -341,15 +360,17 @@ GROUP BY "__fk_${foreignKey}"
     const innerSelectFields = [
       `"${targetTable}"."${foreignKey}" as "__fk_${foreignKey}"`,
       ...leafFields.map(f => {
-        const isSimpleColumn = /^"[^".]+"$/.test(f.expression);
+        // Rewrite collection marker in expression to actual table name
+        const rewrittenExpr = rewriteCollectionMarker(f.expression) || f.expression;
+        const isSimpleColumn = /^"[^".]+"$/.test(rewrittenExpr);
         if (isSimpleColumn && hasNavigationJoins) {
-          const columnName = f.expression.slice(1, -1);
+          const columnName = rewrittenExpr.slice(1, -1);
           return `"${targetTable}"."${columnName}" as "${f.alias}"`;
         }
-        if (f.expression !== `"${f.alias}"`) {
-          return `${f.expression} as "${f.alias}"`;
+        if (rewrittenExpr !== `"${f.alias}"`) {
+          return `${rewrittenExpr} as "${f.alias}"`;
         }
-        return f.expression;
+        return rewrittenExpr;
       }),
     ];
 
@@ -417,6 +438,12 @@ WHERE "__rn" = 1
   ): string {
     const { targetTable, foreignKey, orderByClause, limitValue, offsetValue } = config;
 
+    // Helper to rewrite the collection marker alias to the actual table name
+    const rewriteCollectionMarker = (expr: string): string => {
+      const markerPattern = new RegExp(`"__collection_${targetTable}__"`, 'g');
+      return expr.replace(markerPattern, `"${targetTable}"`);
+    };
+
     // CTE strategy uses selectorNavigationJoins for joins within the collection's selector.
     // Unlike LATERAL, CTEs don't need navigation path joins for outer query correlation.
     const navigationJoins = config.selectorNavigationJoins;
@@ -426,18 +453,20 @@ WHERE "__rn" = 1
     const innerSelectFields = [
       `"${targetTable}"."${foreignKey}" as "__fk_${foreignKey}"`,
       ...leafFields.map(f => {
+        // Rewrite collection marker in expression to actual table name
+        const rewrittenExpr = rewriteCollectionMarker(f.expression);
         // If expression is just a quoted column name (e.g., `"id"`), qualify it with target table
         // But if it's already qualified (e.g., `"user"."username"`), leave it as is
-        const isSimpleColumn = /^"[^".]+"$/.test(f.expression);
+        const isSimpleColumn = /^"[^".]+"$/.test(rewrittenExpr);
         if (isSimpleColumn && hasNavigationJoins) {
           // Extract column name and qualify with target table
-          const columnName = f.expression.slice(1, -1); // Remove quotes
+          const columnName = rewrittenExpr.slice(1, -1); // Remove quotes
           return `"${targetTable}"."${columnName}" as "${f.alias}"`;
         }
-        if (f.expression !== `"${f.alias}"`) {
-          return `${f.expression} as "${f.alias}"`;
+        if (rewrittenExpr !== `"${f.alias}"`) {
+          return `${rewrittenExpr} as "${f.alias}"`;
         }
-        return f.expression;
+        return rewrittenExpr;
       }),
     ];
 
@@ -495,8 +524,16 @@ GROUP BY "__fk_${foreignKey}"
       throw new Error('arrayField is required for array aggregation');
     }
 
-    // Build WHERE clause
-    const whereSQL = whereClause ? `WHERE ${whereClause}` : '';
+    // Helper to rewrite the collection marker alias to the actual table name
+    const rewriteCollectionMarker = (expr: string | undefined): string | undefined => {
+      if (!expr) return expr;
+      const markerPattern = new RegExp(`"__collection_${targetTable}__"`, 'g');
+      return expr.replace(markerPattern, `"${targetTable}"`);
+    };
+
+    // Build WHERE clause (rewrite collection markers)
+    const rewrittenWhereClause = rewriteCollectionMarker(whereClause);
+    const whereSQL = rewrittenWhereClause ? `WHERE ${rewrittenWhereClause}` : '';
 
     // Build DISTINCT clause
     const distinctClause = isDistinct ? 'DISTINCT ' : '';
@@ -636,8 +673,16 @@ GROUP BY "__fk_${foreignKey}"
   ): string {
     const { aggregationType, aggregateField, targetTable, foreignKey, whereClause } = config;
 
-    // Build WHERE clause
-    const whereSQL = whereClause ? `WHERE ${whereClause}` : '';
+    // Helper to rewrite the collection marker alias to the actual table name
+    const rewriteCollectionMarker = (expr: string | undefined): string | undefined => {
+      if (!expr) return expr;
+      const markerPattern = new RegExp(`"__collection_${targetTable}__"`, 'g');
+      return expr.replace(markerPattern, `"${targetTable}"`);
+    };
+
+    // Build WHERE clause (rewrite collection markers)
+    const rewrittenWhereClause = rewriteCollectionMarker(whereClause);
+    const whereSQL = rewrittenWhereClause ? `WHERE ${rewrittenWhereClause}` : '';
 
     // Build aggregation expression
     let aggregateExpression: string;

@@ -155,17 +155,30 @@ export class LateralCollectionStrategy implements ICollectionStrategy {
     lateralAlias: string,
     context: QueryContext
   ): CollectionAggregationResult {
-    const { arrayField, targetTable, foreignKey, sourceTable, whereClause, isDistinct, navigationJoins, selectedFields, aggregationType, aggregateField, defaultValue } = config;
+    const { arrayField, targetTable, foreignKey, sourceTable, whereClause, isDistinct, selectedFields, aggregationType, aggregateField, defaultValue, relationName, selectorNavigationJoins } = config;
 
-    const hasNavigationJoins = navigationJoins && navigationJoins.length > 0;
+    // Use a unique table alias to avoid conflicts with outer query tables
+    const innerTableAlias = `${lateralAlias}_${relationName}`;
 
-    // Build navigation JOINs for multi-level navigation
-    const navJoinsSQL = this.buildNavigationJoins(navigationJoins, targetTable);
+    // For correlated subqueries, we only need selector navigation joins (joins within the selector),
+    // NOT the path navigation joins. Path navigation joins are part of the outer query's joins.
+    const hasNavigationJoins = selectorNavigationJoins && selectorNavigationJoins.length > 0;
+
+    // Helper to rewrite expressions that reference the collection's table to use inner alias
+    const rewriteTableReference = (expression: string): string => {
+      // Replace the special marker alias `"__collection_tableName__".` with `"innerTableAlias".`
+      const markerPattern = new RegExp(`"__collection_${targetTable}__"\\.`, 'g');
+      return expression.replace(markerPattern, `"${innerTableAlias}".`);
+    };
+
+    // Build navigation JOINs for multi-level navigation (selector joins only)
+    const navJoinsSQL = this.buildNavigationJoinsWithAlias(selectorNavigationJoins, innerTableAlias, targetTable, context);
 
     // Build WHERE clause with correlation to parent
-    let whereSQL = `"${targetTable}"."${foreignKey}" = "${sourceTable}"."id"`;
+    let whereSQL = `"${innerTableAlias}"."${foreignKey}" = "${sourceTable}"."id"`;
     if (whereClause) {
-      whereSQL += ` AND ${whereClause}`;
+      const rewrittenWhereClause = rewriteTableReference(whereClause);
+      whereSQL += ` AND ${rewrittenWhereClause}`;
     }
 
     let subquerySQL: string;
@@ -176,13 +189,11 @@ export class LateralCollectionStrategy implements ICollectionStrategy {
       }
 
       // Get the actual field expression from selectedFields (if available)
-      let fieldExpression = `"${arrayField}"`;
+      let fieldExpression = `"${innerTableAlias}"."${arrayField}"`;
       if (selectedFields && selectedFields.length > 0) {
         const firstField = selectedFields[0];
         if (firstField.expression && firstField.expression !== `"${arrayField}"`) {
-          fieldExpression = firstField.expression;
-        } else if (hasNavigationJoins) {
-          fieldExpression = `"${targetTable}"."${arrayField}"`;
+          fieldExpression = rewriteTableReference(firstField.expression);
         }
       }
 
@@ -193,12 +204,12 @@ export class LateralCollectionStrategy implements ICollectionStrategy {
       if (isDistinct) {
         subquerySQL = `(SELECT COALESCE(array_agg("${arrayField}"), ${defaultValue})
 FROM (SELECT DISTINCT ${fieldExpression} as "${arrayField}"
-FROM "${targetTable}"
+FROM "${targetTable}" "${innerTableAlias}"
 ${navJoinsSQL}
 WHERE ${whereSQL}) "sq")`;
       } else {
         subquerySQL = `(SELECT COALESCE(array_agg(${fieldExpression}), ${defaultValue})
-FROM "${targetTable}"
+FROM "${targetTable}" "${innerTableAlias}"
 ${navJoinsSQL}
 WHERE ${whereSQL})`;
       }
@@ -215,7 +226,7 @@ WHERE ${whereSQL})`;
           if (!aggregateField) {
             throw new Error(`${aggregationType.toUpperCase()} requires an aggregate field`);
           }
-          aggregateExpression = `${aggregationType.toUpperCase()}("${aggregateField}")`;
+          aggregateExpression = `${aggregationType.toUpperCase()}("${innerTableAlias}"."${aggregateField}")`;
           break;
         default:
           throw new Error(`Unknown aggregation type: ${aggregationType}`);
@@ -223,7 +234,7 @@ WHERE ${whereSQL})`;
 
       // Build correlated subquery for scalar aggregation
       subquerySQL = `(SELECT COALESCE(${aggregateExpression}, ${defaultValue})
-FROM "${targetTable}"
+FROM "${targetTable}" "${innerTableAlias}"
 ${navJoinsSQL}
 WHERE ${whereSQL})`;
     }
@@ -290,6 +301,70 @@ WHERE ${whereSQL})`;
   }
 
   /**
+   * Build navigation JOINs SQL with inner table alias mapping
+   * Similar to buildNavigationJoins but uses innerTableAlias for the collection's own table
+   * @param navigationJoins - The navigation joins to build
+   * @param innerTableAlias - The alias used for the collection's target table (e.g., "lateral_0_posts")
+   * @param targetTable - Optional: the original target table name (e.g., "posts") to map to innerTableAlias
+   * @param context - Optional: QueryContext containing lateralTableAliasMap for nested lateral references
+   */
+  private buildNavigationJoinsWithAlias(
+    navigationJoins: NavigationJoin[] | undefined,
+    innerTableAlias: string,
+    targetTable?: string,
+    context?: QueryContext
+  ): string {
+    if (!navigationJoins || navigationJoins.length === 0) {
+      return '';
+    }
+
+    // Extract the relation name from innerTableAlias (e.g., "lateral_0_posts" -> "posts")
+    // This is needed to know which source aliases should be remapped
+    const parts = innerTableAlias.split('_');
+    const relationName = parts.length >= 3 ? parts.slice(2).join('_') : innerTableAlias;
+
+    // Get the lateral table alias map from context (for nested lateral references)
+    // This is used when a nested collection's selector navigation references a parent collection's table
+    const lateralAliasMap = context?.lateralTableAliasMap;
+
+    const joinClauses: string[] = [];
+
+    for (const join of navigationJoins) {
+      const joinType = join.isMandatory ? 'INNER JOIN' : 'LEFT JOIN';
+      const qualifiedTable = join.targetSchema
+        ? `"${join.targetSchema}"."${join.targetTable}"`
+        : `"${join.targetTable}"`;
+
+      // Build the ON clause
+      // foreignKeys are the columns in the source table
+      // matches are the columns in the target table (usually primary keys)
+      const onConditions: string[] = [];
+      for (let i = 0; i < join.foreignKeys.length; i++) {
+        const fk = join.foreignKeys[i];
+        const pk = join.matches[i] || 'id';
+        // Use innerTableAlias if the source alias matches the collection's target table or relation name
+        // This handles the case where we've aliased the main FROM table
+        let sourceAlias = join.sourceAlias;
+        if (targetTable && sourceAlias === targetTable) {
+          // This join's source is the current collection's table - use inner alias
+          sourceAlias = innerTableAlias;
+        } else if (sourceAlias === relationName) {
+          sourceAlias = innerTableAlias;
+        } else if (lateralAliasMap && lateralAliasMap.has(sourceAlias)) {
+          // For nested collections, if the source references a parent collection's table,
+          // use the parent's aliased name from the map
+          sourceAlias = lateralAliasMap.get(sourceAlias)!;
+        }
+        onConditions.push(`"${sourceAlias}"."${fk}" = "${join.alias}"."${pk}"`);
+      }
+
+      joinClauses.push(`${joinType} ${qualifiedTable} "${join.alias}" ON ${onConditions.join(' AND ')}`);
+    }
+
+    return joinClauses.join('\n  ');
+  }
+
+  /**
    * Build JSONB aggregation using LATERAL
    */
   private buildJsonbAggregation(
@@ -297,7 +372,12 @@ WHERE ${whereSQL})`;
     lateralAlias: string,
     context: QueryContext
   ): string {
-    const { selectedFields, targetTable, foreignKey, sourceTable, whereClause, orderByClause, limitValue, offsetValue, isDistinct, navigationJoins } = config;
+    const { selectedFields, targetTable, foreignKey, sourceTable, whereClause, orderByClause, limitValue, offsetValue, isDistinct, navigationJoins, relationName } = config;
+
+    // Use a unique table alias to avoid conflicts with outer query tables
+    // This is important when the collection targets the same table as the outer query
+    // (e.g., post.user.posts where both outer and inner are "posts" table)
+    const innerTableAlias = `${lateralAlias}_${relationName}`;
 
     // Helper to collect all leaf fields from a potentially nested structure
     const collectLeafFields = (fields: SelectedField[], prefix: string = ''): Array<{ alias: string; expression: string }> => {
@@ -332,44 +412,67 @@ WHERE ${whereSQL})`;
     const leafFields = collectLeafFields(selectedFields);
 
     // When there are navigation joins, we need to qualify unqualified field expressions
-    // with the target table name to avoid ambiguous column references
+    // with the inner table alias to avoid ambiguous column references
     const hasNavigationJoins = navigationJoins && navigationJoins.length > 0;
+
+    // Helper to rewrite expressions that reference the collection's table to use inner alias
+    const rewriteTableReference = (expression: string): string => {
+      // Replace the special marker alias `"__collection_tableName__".` with `"innerTableAlias".`
+      // This marker is set in CollectionQueryBuilder.createMockItem() to distinguish
+      // collection references from outer table references when both target the same table
+      const markerPattern = new RegExp(`"__collection_${targetTable}__"\\.`, 'g');
+      return expression.replace(markerPattern, `"${innerTableAlias}".`);
+    };
 
     // Build the subquery SELECT fields (no foreign key needed since we correlate with parent)
     const allSelectFields = leafFields.map(f => {
-      // If expression is just a quoted column name (e.g., `"id"`), qualify it with target table
-      // But if it's already qualified (e.g., `"user"."username"`), leave it as is
+      // If expression is just a quoted column name (e.g., `"id"`), qualify it with inner table alias
+      // But if it's already qualified (e.g., `"user"."username"`), rewrite if it references target table
       const isSimpleColumn = /^"[^".]+"$/.test(f.expression);
-      if (isSimpleColumn && hasNavigationJoins) {
-        // Extract column name and qualify with target table
+      if (isSimpleColumn) {
+        // Unqualified column - qualify with inner table alias
         const columnName = f.expression.slice(1, -1); // Remove quotes
-        return `"${targetTable}"."${columnName}" as "${f.alias}"`;
+        return `"${innerTableAlias}"."${columnName}" as "${f.alias}"`;
       }
-      if (f.expression !== `"${f.alias}"`) {
-        return `${f.expression} as "${f.alias}"`;
+      // Already qualified - rewrite target table references
+      const rewritten = rewriteTableReference(f.expression);
+      if (rewritten !== `"${f.alias}"`) {
+        return `${rewritten} as "${f.alias}"`;
       }
-      return f.expression;
+      return rewritten;
     });
 
     // Build the JSONB fields for json_build_object
     const jsonbObjectExpr = buildJsonbObject(selectedFields);
 
     // Build navigation JOINs for multi-level navigation
-    const navJoinsSQL = this.buildNavigationJoins(navigationJoins, targetTable);
+    // Pass innerTableAlias so navigation joins can reference it properly
+    const navJoinsSQL = this.buildNavigationJoinsWithAlias(navigationJoins, innerTableAlias, targetTable, context);
 
     // Collect nested CTE/LATERAL joins (for collections within collections)
     const nestedCteJoins = this.collectNestedCteJoins(selectedFields);
     const nestedCteJoinsSQL = nestedCteJoins.length > 0 ? nestedCteJoins.join('\n  ') : '';
 
+    // For nested collections, the source table may be aliased in a parent LATERAL
+    // Check the lateralTableAliasMap to get the correct alias
+    const effectiveSourceTable = context.lateralTableAliasMap?.get(sourceTable) || sourceTable;
+
     // Build WHERE clause - LATERAL correlates with parent via foreign key
-    // The correlation is: target.foreignKey = source.id
-    let whereSQL = `WHERE "${targetTable}"."${foreignKey}" = "${sourceTable}"."id"`;
+    // The correlation is: innerAlias.foreignKey = source.id
+    // Use the innerTableAlias for the collection's own table
+    let whereSQL = `WHERE "${innerTableAlias}"."${foreignKey}" = "${effectiveSourceTable}"."id"`;
     if (whereClause) {
-      whereSQL += ` AND ${whereClause}`;
+      // Rewrite the user's WHERE clause to use inner alias for the collection's table
+      const rewrittenWhereClause = rewriteTableReference(whereClause);
+      whereSQL += ` AND ${rewrittenWhereClause}`;
     }
 
-    // Build ORDER BY clause
-    const orderBySQL = orderByClause ? `ORDER BY ${orderByClause}` : '';
+    // Build ORDER BY clause - also rewrite table references
+    let orderBySQL = '';
+    if (orderByClause) {
+      const rewrittenOrderBy = rewriteTableReference(orderByClause);
+      orderBySQL = `ORDER BY ${rewrittenOrderBy}`;
+    }
 
     // Build LIMIT/OFFSET
     let limitOffsetClause = '';
@@ -394,7 +497,7 @@ SELECT json_agg(
 ) as data
 FROM (
   SELECT ${distinctClause}${allSelectFields.join(', ')}
-  FROM "${targetTable}"
+  FROM "${targetTable}" "${innerTableAlias}"
   ${navJoinsSQL}
   ${nestedCteJoinsSQL}
   ${whereSQL}
@@ -415,7 +518,10 @@ FROM (
     lateralAlias: string,
     context: QueryContext
   ): string {
-    const { selectedFields, targetTable, foreignKey, sourceTable, whereClause, orderByClause, isDistinct, navigationJoins } = config;
+    const { selectedFields, targetTable, foreignKey, sourceTable, whereClause, orderByClause, isDistinct, navigationJoins, relationName } = config;
+
+    // Use a unique table alias to avoid conflicts with outer query tables
+    const innerTableAlias = `${lateralAlias}_${relationName}`;
 
     // Helper to collect all leaf fields from a potentially nested structure
     const collectLeafFields = (fields: SelectedField[], prefix: string = ''): Array<{ alias: string; expression: string }> => {
@@ -449,44 +555,53 @@ FROM (
     // Collect all leaf fields for the SELECT clause
     const leafFields = collectLeafFields(selectedFields);
 
-    // When there are navigation joins, we need to qualify unqualified field expressions
-    // with the target table name to avoid ambiguous column references
-    const hasNavigationJoins = navigationJoins && navigationJoins.length > 0;
+    // Helper to rewrite expressions that reference the collection's table to use inner alias
+    const rewriteTableReference = (expression: string): string => {
+      // Replace the special marker alias `"__collection_tableName__".` with `"innerTableAlias".`
+      const markerPattern = new RegExp(`"__collection_${targetTable}__"\\.`, 'g');
+      return expression.replace(markerPattern, `"${innerTableAlias}".`);
+    };
 
-    // Build the subquery SELECT fields (no foreign key needed since we correlate with parent)
+    // Build the subquery SELECT fields using inner table alias
     const allSelectFields = leafFields.map(f => {
-      // If expression is just a quoted column name (e.g., `"id"`), qualify it with target table
-      // But if it's already qualified (e.g., `"user"."username"`), leave it as is
       const isSimpleColumn = /^"[^".]+"$/.test(f.expression);
-      if (isSimpleColumn && hasNavigationJoins) {
-        // Extract column name and qualify with target table
-        const columnName = f.expression.slice(1, -1); // Remove quotes
-        return `"${targetTable}"."${columnName}" as "${f.alias}"`;
+      if (isSimpleColumn) {
+        const columnName = f.expression.slice(1, -1);
+        return `"${innerTableAlias}"."${columnName}" as "${f.alias}"`;
       }
-      if (f.expression !== `"${f.alias}"`) {
-        return `${f.expression} as "${f.alias}"`;
+      const rewritten = rewriteTableReference(f.expression);
+      if (rewritten !== `"${f.alias}"`) {
+        return `${rewritten} as "${f.alias}"`;
       }
-      return f.expression;
+      return rewritten;
     });
 
     // Build the JSONB fields for json_build_object
     const jsonbObjectExpr = buildJsonbObject(selectedFields);
 
     // Build navigation JOINs for multi-level navigation
-    const navJoinsSQL = this.buildNavigationJoins(navigationJoins, targetTable);
+    const navJoinsSQL = this.buildNavigationJoinsWithAlias(navigationJoins, innerTableAlias, targetTable, context);
 
     // Collect nested CTE/LATERAL joins (for collections within collections)
     const nestedCteJoins = this.collectNestedCteJoins(selectedFields);
     const nestedCteJoinsSQL = nestedCteJoins.length > 0 ? nestedCteJoins.join('\n  ') : '';
 
+    // For nested collections, the source table may be aliased in a parent LATERAL
+    const effectiveSourceTable = context.lateralTableAliasMap?.get(sourceTable) || sourceTable;
+
     // Build WHERE clause - LATERAL correlates with parent via foreign key
-    let whereSQL = `WHERE "${targetTable}"."${foreignKey}" = "${sourceTable}"."id"`;
+    let whereSQL = `WHERE "${innerTableAlias}"."${foreignKey}" = "${effectiveSourceTable}"."id"`;
     if (whereClause) {
-      whereSQL += ` AND ${whereClause}`;
+      const rewrittenWhereClause = rewriteTableReference(whereClause);
+      whereSQL += ` AND ${rewrittenWhereClause}`;
     }
 
     // Build ORDER BY clause
-    const orderBySQL = orderByClause ? `ORDER BY ${orderByClause}` : '';
+    let orderBySQL = '';
+    if (orderByClause) {
+      const rewrittenOrderBy = rewriteTableReference(orderByClause);
+      orderBySQL = `ORDER BY ${rewrittenOrderBy}`;
+    }
 
     // Build DISTINCT clause
     const distinctClause = isDistinct ? 'DISTINCT ' : '';
@@ -497,7 +612,7 @@ FROM (
 SELECT ${jsonbObjectExpr} as data
 FROM (
   SELECT ${distinctClause}${allSelectFields.join(', ')}
-  FROM "${targetTable}"
+  FROM "${targetTable}" "${innerTableAlias}"
   ${navJoinsSQL}
   ${nestedCteJoinsSQL}
   ${whereSQL}
@@ -517,39 +632,52 @@ FROM (
     lateralAlias: string,
     context: QueryContext
   ): string {
-    const { arrayField, targetTable, foreignKey, sourceTable, whereClause, orderByClause, limitValue, offsetValue, isDistinct, navigationJoins, selectedFields } = config;
+    const { arrayField, targetTable, foreignKey, sourceTable, whereClause, orderByClause, limitValue, offsetValue, isDistinct, navigationJoins, selectedFields, relationName } = config;
 
     if (!arrayField) {
       throw new Error('arrayField is required for array aggregation');
     }
 
-    const hasNavigationJoins = navigationJoins && navigationJoins.length > 0;
+    // Use a unique table alias to avoid conflicts with outer query tables
+    const innerTableAlias = `${lateralAlias}_${relationName}`;
+
+    // Helper to rewrite expressions that reference the collection's table to use inner alias
+    const rewriteTableReference = (expression: string): string => {
+      // Replace the special marker alias `"__collection_tableName__".` with `"innerTableAlias".`
+      const markerPattern = new RegExp(`"__collection_${targetTable}__"\\.`, 'g');
+      return expression.replace(markerPattern, `"${innerTableAlias}".`);
+    };
 
     // Get the actual field expression from selectedFields (if available)
     // This handles navigation properties like p.user!.id which need to be "user"."id"
-    let fieldExpression = `"${arrayField}"`;
+    let fieldExpression = `"${innerTableAlias}"."${arrayField}"`;
     if (selectedFields && selectedFields.length > 0) {
       const firstField = selectedFields[0];
       if (firstField.expression && firstField.expression !== `"${arrayField}"`) {
-        // Use the actual expression (e.g., "user"."id") instead of just the alias
-        fieldExpression = firstField.expression;
-      } else if (hasNavigationJoins) {
-        // If we have navigation joins but no explicit expression, qualify with target table
-        fieldExpression = `"${targetTable}"."${arrayField}"`;
+        // Use the actual expression, rewriting target table references
+        fieldExpression = rewriteTableReference(firstField.expression);
       }
     }
 
     // Build navigation JOINs for multi-level navigation
-    const navJoinsSQL = this.buildNavigationJoins(navigationJoins, targetTable);
+    const navJoinsSQL = this.buildNavigationJoinsWithAlias(navigationJoins, innerTableAlias, targetTable, context);
+
+    // For nested collections, the source table may be aliased in a parent LATERAL
+    const effectiveSourceTable = context.lateralTableAliasMap?.get(sourceTable) || sourceTable;
 
     // Build WHERE clause with LATERAL correlation
-    let whereSQL = `WHERE "${targetTable}"."${foreignKey}" = "${sourceTable}"."id"`;
+    let whereSQL = `WHERE "${innerTableAlias}"."${foreignKey}" = "${effectiveSourceTable}"."id"`;
     if (whereClause) {
-      whereSQL += ` AND ${whereClause}`;
+      const rewrittenWhereClause = rewriteTableReference(whereClause);
+      whereSQL += ` AND ${rewrittenWhereClause}`;
     }
 
     // Build ORDER BY clause
-    const orderBySQL = orderByClause ? `ORDER BY ${orderByClause}` : '';
+    let orderBySQL = '';
+    if (orderByClause) {
+      const rewrittenOrderBy = rewriteTableReference(orderByClause);
+      orderBySQL = `ORDER BY ${rewrittenOrderBy}`;
+    }
 
     // Build LIMIT/OFFSET
     let limitOffsetClause = '';
@@ -571,7 +699,7 @@ SELECT array_agg(
 ) as data
 FROM (
   SELECT ${distinctClause}${fieldExpression} as "${arrayField}"
-  FROM "${targetTable}"
+  FROM "${targetTable}" "${innerTableAlias}"
   ${navJoinsSQL}
   ${whereSQL}
   ${orderBySQL}
@@ -590,12 +718,26 @@ FROM (
     lateralAlias: string,
     context: QueryContext
   ): string {
-    const { aggregationType, aggregateField, targetTable, foreignKey, sourceTable, whereClause } = config;
+    const { aggregationType, aggregateField, targetTable, foreignKey, sourceTable, whereClause, relationName } = config;
+
+    // Use a unique table alias to avoid conflicts with outer query tables
+    const innerTableAlias = `${lateralAlias}_${relationName}`;
+
+    // Helper to rewrite expressions that reference the collection's table to use inner alias
+    const rewriteTableReference = (expression: string): string => {
+      // Replace the special marker alias `"__collection_tableName__".` with `"innerTableAlias".`
+      const markerPattern = new RegExp(`"__collection_${targetTable}__"\\.`, 'g');
+      return expression.replace(markerPattern, `"${innerTableAlias}".`);
+    };
+
+    // For nested collections, the source table may be aliased in a parent LATERAL
+    const effectiveSourceTable = context.lateralTableAliasMap?.get(sourceTable) || sourceTable;
 
     // Build WHERE clause with LATERAL correlation
-    let whereSQL = `WHERE "${targetTable}"."${foreignKey}" = "${sourceTable}"."id"`;
+    let whereSQL = `WHERE "${innerTableAlias}"."${foreignKey}" = "${effectiveSourceTable}"."id"`;
     if (whereClause) {
-      whereSQL += ` AND ${whereClause}`;
+      const rewrittenWhereClause = rewriteTableReference(whereClause);
+      whereSQL += ` AND ${rewrittenWhereClause}`;
     }
 
     // Build aggregation expression
@@ -610,7 +752,7 @@ FROM (
         if (!aggregateField) {
           throw new Error(`${aggregationType.toUpperCase()} requires an aggregate field`);
         }
-        aggregateExpression = `${aggregationType.toUpperCase()}("${aggregateField}")`;
+        aggregateExpression = `${aggregationType.toUpperCase()}("${innerTableAlias}"."${aggregateField}")`;
         break;
       default:
         throw new Error(`Unknown aggregation type: ${aggregationType}`);
@@ -618,7 +760,7 @@ FROM (
 
     const lateralSQL = `
 SELECT ${aggregateExpression} as data
-FROM "${targetTable}"
+FROM "${targetTable}" "${innerTableAlias}"
 ${whereSQL}
     `.trim();
 

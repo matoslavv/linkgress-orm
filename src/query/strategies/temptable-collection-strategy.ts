@@ -48,6 +48,16 @@ export class TempTableCollectionStrategy implements ICollectionStrategy {
     return 'temptable';
   }
 
+  /**
+   * Helper to rewrite the collection marker alias to the actual table name
+   * For temp table strategy, we use the actual table name (no aliasing), so marker becomes table name
+   */
+  private rewriteCollectionMarker(expr: string | undefined, targetTable: string): string | undefined {
+    if (!expr) return expr;
+    const markerPattern = new RegExp(`"__collection_${targetTable}__"`, 'g');
+    return expr.replace(markerPattern, `"${targetTable}"`);
+  }
+
   requiresParentIds(): boolean {
     // Temp table strategy requires parent IDs to be fetched first
     return true;
@@ -404,13 +414,17 @@ ${aggregationSQL}
 
     const leafFields = collectLeafFields(selectedFields);
 
-    // Build SELECT fields
+    // Build SELECT fields (rewrite collection markers)
     const selectFields = leafFields
-      .map(f => `${f.expression} as "${f.alias}"`)
+      .map(f => {
+        const rewrittenExpr = this.rewriteCollectionMarker(f.expression, targetTable) || f.expression;
+        return `${rewrittenExpr} as "${f.alias}"`;
+      })
       .join(', ');
 
-    // Build WHERE clause
-    const additionalWhere = whereClause ? ` AND ${whereClause}` : '';
+    // Build WHERE clause (rewrite collection markers)
+    const rewrittenWhereClause = this.rewriteCollectionMarker(whereClause, targetTable);
+    const additionalWhere = rewrittenWhereClause ? ` AND ${rewrittenWhereClause}` : '';
 
     // Build ORDER BY clause
     const orderBySQL = orderByClause ? `ORDER BY ${orderByClause}` : `ORDER BY "id" DESC`;
@@ -563,8 +577,9 @@ ${orderBySQL.replace(/ORDER BY/i, 'ORDER BY')}
     // Build the JSONB fields for json_build_object (handles nested structures)
     const jsonbObjectExpr = buildJsonbObject(selectedFields);
 
-    // Build WHERE clause (combine temp table join with additional filters)
-    const additionalWhere = whereClause ? ` AND ${whereClause}` : '';
+    // Build WHERE clause (combine temp table join with additional filters, rewrite markers)
+    const rewrittenWhereClause = this.rewriteCollectionMarker(whereClause, targetTable);
+    const additionalWhere = rewrittenWhereClause ? ` AND ${rewrittenWhereClause}` : '';
 
     // Build ORDER BY clause (use primary key DESC as default for consistent ordering matching JSONB)
     const orderBySQL = orderByClause ? `ORDER BY ${orderByClause}` : `ORDER BY "id" DESC`;
@@ -655,8 +670,9 @@ GROUP BY t."${foreignKey}"
       throw new Error('arrayField is required for array aggregation');
     }
 
-    // Build WHERE clause
-    const additionalWhere = whereClause ? ` AND ${whereClause}` : '';
+    // Build WHERE clause (rewrite collection markers)
+    const rewrittenWhereClause = this.rewriteCollectionMarker(whereClause, targetTable);
+    const additionalWhere = rewrittenWhereClause ? ` AND ${rewrittenWhereClause}` : '';
 
     // Build ORDER BY clause (use primary key DESC as default for consistent ordering matching JSONB)
     const orderBySQL = orderByClause ? `ORDER BY ${orderByClause}` : `ORDER BY "id" DESC`;
@@ -735,8 +751,9 @@ GROUP BY t."${foreignKey}"
   ): string {
     const { aggregationType, aggregateField, targetTable, foreignKey, whereClause } = config;
 
-    // Build WHERE clause
-    const additionalWhere = whereClause ? ` AND ${whereClause}` : '';
+    // Build WHERE clause (rewrite collection markers)
+    const rewrittenWhereClause = this.rewriteCollectionMarker(whereClause, targetTable);
+    const additionalWhere = rewrittenWhereClause ? ` AND ${rewrittenWhereClause}` : '';
 
     // Build aggregation expression
     // Use targetTable as alias to match field references in whereClause

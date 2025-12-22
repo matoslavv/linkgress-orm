@@ -720,6 +720,7 @@ describe('LATERAL strategy with navigation to collection', () => {
       // This query accesses a collection (orders) through a navigation chain (p.user)
       // inside another collection (posts)
       const usersWithNestedData = await db.users
+        .withQueryOptions({ collectionStrategy: 'lateral' })
         .select(u => ({
           username: u.username,
           posts: u.posts!
@@ -896,6 +897,70 @@ describe('LATERAL strategy custom mapper transformation', () => {
       const post = userWithPosts!.posts[0];
       expect(post.dateValue).toBeDefined();
       expect(post.dateValue instanceof Date).toBe(true);
+    }, { collectionStrategy: 'lateral' });
+  });
+});
+
+describe('LATERAL with outer reference in collection WHERE', () => {
+  test('should correctly reference outer scope in collection where clause', async () => {
+    // This tests the fix for: collection navigation through intermediate tables
+    // When accessing post.user.posts.where(p => eq(post.userId, p.userId))
+    // The inner 'p' (from user.posts) should have a different alias than outer 'post'
+    await withDatabase(async (db) => {
+      await seedTestData(db);
+
+      // Pattern: posts -> user (reference) -> posts (collection back to same table)
+      // The WHERE clause references both outer 'post' and inner 'p'
+      const postsWithSiblings = await db.posts
+        .withQueryOptions({ collectionStrategy: 'lateral' })
+        .select(post => ({
+          postId: post.id,
+          title: post.title,
+          // Navigate through user to get sibling posts (by same user)
+          siblingPosts: post.user!.posts!
+            .where(p => eq(post.userId, p.userId))  // This should work: outer post.userId vs inner p.userId
+            .select(p => ({
+              siblingId: p.id,
+              siblingTitle: p.title,
+            }))
+            .toList(),
+        }))
+        .toList();
+
+      expect(postsWithSiblings.length).toBeGreaterThan(0);
+      // Each post should have sibling posts (posts by same user)
+      const alicePost = postsWithSiblings.find(p => p.title?.includes('Alice'));
+      expect(alicePost).toBeDefined();
+      // Alice has 2 posts, so her sibling list should have 2 entries (including self)
+      expect(alicePost!.siblingPosts.length).toBe(2);
+    }, { collectionStrategy: 'lateral' });
+  });
+
+  test('should handle different table aliases for same table in nested navigation', async () => {
+    // More complex case: The outer query table and collection target table are the same
+    // This should NOT produce "column.x = column.x" but proper cross-reference
+    // If the SQL were malformed with self-comparison, the query would fail with an error
+    await withDatabase(async (db) => {
+      await seedTestData(db);
+
+      const results = await db.posts
+        .withQueryOptions({ collectionStrategy: 'lateral' })
+        .where(post => eq(post.userId, 1))  // Filter to user 1's posts (Alice)
+        .select(post => ({
+          postId: post.id,
+          title: post.title,
+          // Navigate to user and back to posts, filtering by outer post's userId
+          sameAuthorPosts: post.user!.posts!
+            .where(p => eq(post.userId, p.userId))
+            .select(p => ({
+              id: p.id,
+              title: p.title,
+            }))
+            .toList(),
+        }))
+        .toList();
+
+      expect(results.length).toBeGreaterThan(0);
     }, { collectionStrategy: 'lateral' });
   });
 });
