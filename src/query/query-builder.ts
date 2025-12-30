@@ -2387,8 +2387,8 @@ export class SelectQueryBuilder<TSelection> {
       }
 
       // Detect navigation property joins from WHERE condition
-      const joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean; sourceAlias?: string }> = [];
-      queryBuilder.detectAndAddJoinsFromCondition(queryBuilder.whereCond, joins);
+      const whereJoins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean; sourceAlias?: string }> = [];
+      queryBuilder.detectAndAddJoinsFromCondition(queryBuilder.whereCond, whereJoins);
 
       const condBuilder = new ConditionBuilder();
       const { sql: whereSql, params: whereParams } = condBuilder.build(queryBuilder.whereCond, 1);
@@ -2398,7 +2398,7 @@ export class SelectQueryBuilder<TSelection> {
       // Build USING clause for navigation properties (PostgreSQL syntax for DELETE with JOINs)
       let usingClause = '';
       let joinConditions: string[] = [];
-      for (const join of joins) {
+      for (const join of whereJoins) {
         const sourceTable = join.sourceAlias || queryBuilder.schema.name;
         const joinTableName = queryBuilder.getQualifiedTableName(join.targetTable, join.targetSchema);
 
@@ -2416,17 +2416,48 @@ export class SelectQueryBuilder<TSelection> {
         }
       }
 
-      // Build RETURNING clause (not needed for count-only)
-      // Qualify columns with table name when using USING clause to avoid ambiguity
-      const hasJoins = joins.length > 0;
-      const returningClause = returning !== 'count'
-        ? queryBuilder.buildUpdateDeleteReturningClause(returning, hasJoins)
-        : undefined;
-
       // Combine join conditions with the original WHERE clause
       const fullWhereClause = joinConditions.length > 0
         ? `${joinConditions.join(' AND ')} AND ${whereSql}`
         : whereSql;
+
+      // Check if RETURNING uses navigation properties
+      const navigationInfo = returning && returning !== 'count' && returning !== true
+        ? queryBuilder.detectNavigationInReturning(returning)
+        : null;
+
+      if (navigationInfo) {
+        // Use CTE-based approach for navigation properties in RETURNING
+        let deleteSql = `DELETE FROM ${qualifiedTableName}`;
+        if (usingClause) {
+          deleteSql += ` ${usingClause}`;
+        }
+        deleteSql += ` WHERE ${fullWhereClause}`;
+
+        const { sql, params } = queryBuilder.buildReturningWithNavigation(
+          deleteSql,
+          whereParams,
+          returning as ((row: TSelection) => TResult),
+          navigationInfo
+        );
+
+        const result = queryBuilder.executor
+          ? await queryBuilder.executor.query(sql, params)
+          : await queryBuilder.client.query(sql, params);
+
+        return queryBuilder.mapReturningResultsWithNavigation(
+          result.rows,
+          returning as ((row: TSelection) => TResult),
+          navigationInfo.navigationFields
+        );
+      }
+
+      // Standard RETURNING (no navigation properties)
+      // Qualify columns with table name when using USING clause to avoid ambiguity
+      const hasJoins = whereJoins.length > 0;
+      const returningClause = returning !== 'count'
+        ? queryBuilder.buildUpdateDeleteReturningClause(returning, hasJoins)
+        : undefined;
 
       let sql = `DELETE FROM ${qualifiedTableName}`;
       if (usingClause) {
@@ -2540,12 +2571,40 @@ export class SelectQueryBuilder<TSelection> {
       const { sql: whereSql, params: whereParams } = condBuilder.build(queryBuilder.whereCond, paramIndex);
       values.push(...whereParams);
 
-      // Build RETURNING clause (not needed for count-only)
+      const qualifiedTableName = queryBuilder.getQualifiedTableName(queryBuilder.schema.name, queryBuilder.schema.schema);
+
+      // Check if RETURNING uses navigation properties
+      const navigationInfo = returning && returning !== 'count' && returning !== true
+        ? queryBuilder.detectNavigationInReturning(returning)
+        : null;
+
+      if (navigationInfo) {
+        // Use CTE-based approach for navigation properties in RETURNING
+        const updateSql = `UPDATE ${qualifiedTableName} SET ${setClauses.join(', ')} WHERE ${whereSql}`;
+
+        const { sql, params } = queryBuilder.buildReturningWithNavigation(
+          updateSql,
+          values,
+          returning as ((row: TSelection) => TResult),
+          navigationInfo
+        );
+
+        const result = queryBuilder.executor
+          ? await queryBuilder.executor.query(sql, params)
+          : await queryBuilder.client.query(sql, params);
+
+        return queryBuilder.mapReturningResultsWithNavigation(
+          result.rows,
+          returning as ((row: TSelection) => TResult),
+          navigationInfo.navigationFields
+        );
+      }
+
+      // Standard RETURNING (no navigation properties)
       const returningClause = returning !== 'count'
         ? queryBuilder.buildUpdateDeleteReturningClause(returning)
         : undefined;
 
-      const qualifiedTableName = queryBuilder.getQualifiedTableName(queryBuilder.schema.name, queryBuilder.schema.schema);
       let sql = `UPDATE ${qualifiedTableName} SET ${setClauses.join(', ')} WHERE ${whereSql}`;
       if (returningClause) {
         sql += ` RETURNING ${returningClause.sql}`;
@@ -2680,6 +2739,238 @@ export class SelectQueryBuilder<TSelection> {
           const [, col] = colEntry;
           const config = (col as any).build();
           // Apply fromDriver mapper if present
+          mapped[key] = config.mapper ? config.mapper.fromDriver(value) : value;
+        } else {
+          mapped[key] = value;
+        }
+      }
+      return mapped;
+    });
+  }
+
+  /**
+   * Detect if a RETURNING selector uses navigation properties
+   * Returns navigation info if found, null otherwise
+   * @internal
+   */
+  private detectNavigationInReturning<TResult>(
+    returning: true | ((row: TSelection) => TResult)
+  ): {
+    hasNavigation: boolean;
+    selection: any;
+    joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean; sourceAlias?: string }>;
+    navigationFields: Map<string, { tableAlias: string; dbColumnName: string; schemaTable?: string }>;
+  } | null {
+    if (returning === true) {
+      // Full entity returning doesn't need navigation support
+      return null;
+    }
+
+    // Analyze the returning selector
+    const mockRow = this._createMockRow();
+    const selectedMock = this.selector(mockRow);
+    const selection = returning(selectedMock as TSelection);
+
+    if (typeof selection !== 'object' || selection === null) {
+      return null;
+    }
+
+    const navigationFields = new Map<string, { tableAlias: string; dbColumnName: string; schemaTable?: string }>();
+    const allTableAliases = new Set<string>();
+
+    // Check each field in the selection for navigation properties
+    for (const [alias, field] of Object.entries(selection)) {
+      if (field && typeof field === 'object' && '__dbColumnName' in field && '__tableAlias' in field) {
+        const tableAlias = (field as any).__tableAlias as string;
+        if (tableAlias && tableAlias !== this.schema.name) {
+          allTableAliases.add(tableAlias);
+          navigationFields.set(alias, {
+            tableAlias,
+            dbColumnName: (field as any).__dbColumnName,
+            schemaTable: (field as any).__sourceTable,
+          });
+        }
+        // Also collect intermediate navigation aliases for multi-level navigation
+        if ('__navigationAliases' in field && Array.isArray((field as any).__navigationAliases)) {
+          for (const navAlias of (field as any).__navigationAliases) {
+            if (navAlias && navAlias !== this.schema.name) {
+              allTableAliases.add(navAlias);
+            }
+          }
+        }
+      }
+    }
+
+    if (navigationFields.size === 0) {
+      return null;
+    }
+
+    // Resolve navigation joins
+    const joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean; sourceAlias?: string }> = [];
+    this.resolveJoinsForTableAliases(allTableAliases, joins);
+
+    return { hasNavigation: true, selection, joins, navigationFields };
+  }
+
+  /**
+   * Build RETURNING clause with navigation property support using CTE
+   * @internal
+   */
+  private buildReturningWithNavigation<TResult>(
+    mutationSql: string,
+    mutationParams: any[],
+    returning: true | ((row: TSelection) => TResult),
+    navigationInfo: {
+      selection: any;
+      joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean; sourceAlias?: string }>;
+      navigationFields: Map<string, { tableAlias: string; dbColumnName: string; schemaTable?: string }>;
+    }
+  ): { sql: string; params: any[] } {
+    // Build the CTE wrapping the mutation
+    // First, collect all columns needed from the main table in the mutation's RETURNING
+    const mainTableColumns = new Set<string>();
+    const selectParts: string[] = [];
+    const mockRow = this._createMockRow();
+    const selectedMock = this.selector(mockRow);
+    const selection = (returning as Function)(selectedMock as TSelection);
+
+    // For each selected field, determine if it's from main table or navigation
+    for (const [alias, field] of Object.entries(selection)) {
+      if (field && typeof field === 'object' && '__dbColumnName' in field) {
+        const tableAlias = (field as any).__tableAlias as string;
+        const dbColumnName = (field as any).__dbColumnName as string;
+
+        if (!tableAlias || tableAlias === this.schema.name) {
+          // Main table column - add to CTE RETURNING and final SELECT
+          mainTableColumns.add(dbColumnName);
+          selectParts.push(`"__mutation__"."${dbColumnName}" AS "${alias}"`);
+        } else {
+          // Navigation column - will be joined in outer query
+          selectParts.push(`"${tableAlias}"."${dbColumnName}" AS "${alias}"`);
+        }
+      }
+    }
+
+    // We also need to include foreign keys for joins that aren't already in the selection
+    for (const join of navigationInfo.joins) {
+      for (const fk of join.foreignKeys) {
+        // Find the db column name for this foreign key
+        const colEntry = Object.entries(this.schema.columns).find(([propName, _]) => propName === fk);
+        if (colEntry) {
+          const config = (colEntry[1] as any).build();
+          const dbColName = config.name;
+          mainTableColumns.add(dbColName);
+        } else {
+          // FK might be the db column name directly
+          mainTableColumns.add(fk);
+        }
+      }
+    }
+
+    // Also include foreign keys from intermediate joins (join to another join)
+    for (const join of navigationInfo.joins) {
+      if (join.sourceAlias && join.sourceAlias !== this.schema.name) {
+        // This join comes from another join, we need to include those FK columns too
+        // Find the source join
+        const sourceJoin = navigationInfo.joins.find(j => j.alias === join.sourceAlias);
+        if (sourceJoin) {
+          // We need the source table's FK columns in our RETURNING if the source is the main table
+          // But if source is itself a navigation, we handle it in the outer SELECT
+        }
+      }
+    }
+
+    // Build RETURNING clause for CTE with all needed columns from main table
+    const cteReturningCols = Array.from(mainTableColumns).map(col => `"${col}"`).join(', ');
+
+    // Add RETURNING to the mutation SQL for CTE
+    const mutationWithReturning = `${mutationSql} RETURNING ${cteReturningCols}`;
+
+    // Build the JOINs for the outer SELECT
+    const joinClauses: string[] = [];
+    for (const join of navigationInfo.joins) {
+      const sourceAlias = join.sourceAlias === this.schema.name ? '__mutation__' : `"${join.sourceAlias}"`;
+      const qualifiedJoinTable = this.getQualifiedTableName(join.targetTable, join.targetSchema);
+
+      // Find the db column names for the foreign keys
+      const joinConditions: string[] = [];
+      for (let i = 0; i < join.foreignKeys.length; i++) {
+        const fk = join.foreignKeys[i];
+        const match = join.matches[i] || 'id';
+
+        // Convert property name to db column name for FK
+        let fkDbCol = fk;
+        const colEntry = Object.entries(this.schema.columns).find(([propName, _]) => propName === fk);
+        if (colEntry) {
+          const config = (colEntry[1] as any).build();
+          fkDbCol = config.name;
+        }
+
+        // For source that's the mutation CTE
+        if (join.sourceAlias === this.schema.name || !join.sourceAlias) {
+          joinConditions.push(`"__mutation__"."${fkDbCol}" = "${join.alias}"."${match}"`);
+        } else {
+          // Source is another joined table
+          joinConditions.push(`"${join.sourceAlias}"."${fk}" = "${join.alias}"."${match}"`);
+        }
+      }
+
+      const joinType = join.isMandatory ? 'INNER JOIN' : 'LEFT JOIN';
+      joinClauses.push(`${joinType} ${qualifiedJoinTable} AS "${join.alias}" ON ${joinConditions.join(' AND ')}`);
+    }
+
+    // Build the final CTE query
+    const sql = `WITH "__mutation__" AS (
+  ${mutationWithReturning}
+)
+SELECT ${selectParts.join(', ')}
+FROM "__mutation__"
+${joinClauses.join('\n')}`;
+
+    return { sql, params: mutationParams };
+  }
+
+  /**
+   * Map RETURNING results with navigation properties
+   * Applies type mappers based on source table schemas
+   * @internal
+   */
+  private mapReturningResultsWithNavigation<TResult>(
+    rows: any[],
+    returning: (row: TSelection) => TResult,
+    navigationFields: Map<string, { tableAlias: string; dbColumnName: string; schemaTable?: string }>
+  ): any[] {
+    return rows.map(row => {
+      const mapped: any = {};
+      for (const [key, value] of Object.entries(row)) {
+        // Check if this is a navigation field
+        const navInfo = navigationFields.get(key);
+        if (navInfo && navInfo.schemaTable && this.schemaRegistry) {
+          // Try to get mapper from the navigation target's schema
+          const targetSchema = this.schemaRegistry.get(navInfo.schemaTable);
+          if (targetSchema) {
+            // Find the column and its mapper
+            const colEntry = Object.entries(targetSchema.columns).find(([_, col]) => {
+              const config = (col as any).build();
+              return config.name === navInfo.dbColumnName;
+            });
+            if (colEntry) {
+              const config = (colEntry[1] as any).build();
+              mapped[key] = config.mapper ? config.mapper.fromDriver(value) : value;
+              continue;
+            }
+          }
+        }
+
+        // Try to find column by alias or name in main schema
+        const colEntry = Object.entries(this.schema.columns).find(([propName, col]) => {
+          const config = (col as any).build();
+          return propName === key || config.name === key;
+        });
+
+        if (colEntry) {
+          const [, col] = colEntry;
+          const config = (col as any).build();
           mapped[key] = config.mapper ? config.mapper.fromDriver(value) : value;
         } else {
           mapped[key] = value;
