@@ -1953,6 +1953,14 @@ export class DbEntityTable<TEntity extends DbEntity> {
   }
 
   /**
+   * Get the schema registry
+   * @internal
+   */
+  _getSchemaRegistry(): Map<string, TableSchema> {
+    return (this.context as any).schemaRegistry;
+  }
+
+  /**
    * Get information about all columns in this table.
    * By default returns metadata about database columns only, excluding navigation properties.
    *
@@ -3614,6 +3622,7 @@ WHERE ${whereClause}`.trim();
    */
   private createMockEntity(): EntityQuery<TEntity> {
     const schema = this._getSchema();
+    const schemaRegistry = this._getSchemaRegistry();
     const mock: any = {};
 
     // Add all columns as DbColumn-like objects
@@ -3642,7 +3651,8 @@ WHERE ${whereClause}`.trim();
               relConfig.targetTable,
               relConfig.foreignKey || relConfig.foreignKeys?.[0] || '',
               schema.name,
-              targetSchema
+              targetSchema,
+              schemaRegistry  // Pass schema registry for nested navigation
             );
           },
           enumerable: true,
@@ -3658,7 +3668,8 @@ WHERE ${whereClause}`.trim();
               relConfig.foreignKeys || [relConfig.foreignKey || ''],
               relConfig.matches || [],
               relConfig.isMandatory ?? false,
-              targetSchema
+              targetSchema,
+              schemaRegistry  // Pass schema registry for nested navigation
             );
             return refBuilder.createMockTargetRow();
           },
@@ -3854,6 +3865,7 @@ WHERE ${whereClause}`.trim();
       return;
     }
 
+    const schemaRegistry = this._getSchemaRegistry();
     const resolved = new Set<string>();
     let maxIterations = allTableAliases.size * 3;
 
@@ -3861,10 +3873,19 @@ WHERE ${whereClause}`.trim();
       const joinedSchemas = new Map<string, TableSchema>();
       joinedSchemas.set(schema.name, schema);
 
+      // Build map of all joined schemas - use schema registry for proper relation resolution
       for (const join of joins) {
-        const relation = schema.relations[join.alias];
-        if (relation?.targetTableBuilder) {
-          joinedSchemas.set(join.alias, relation.targetTableBuilder.build());
+        // First try to get from schema registry (has complete relations)
+        let joinedSchema = schemaRegistry.get(join.targetTable);
+        // Fallback to direct relations lookup
+        if (!joinedSchema) {
+          const relation = schema.relations[join.alias];
+          if (relation?.targetTableBuilder) {
+            joinedSchema = relation.targetTableBuilder.build();
+          }
+        }
+        if (joinedSchema) {
+          joinedSchemas.set(join.alias, joinedSchema);
         }
       }
 
@@ -3881,10 +3902,12 @@ WHERE ${whereClause}`.trim();
               let targetSchema: TableSchema | undefined;
               let targetSchemaName: string | undefined;
 
-              if (relation.targetTableBuilder) {
+              // Use schema registry for complete schema info
+              targetSchema = schemaRegistry.get(relation.targetTable);
+              if (!targetSchema && relation.targetTableBuilder) {
                 targetSchema = relation.targetTableBuilder.build();
-                targetSchemaName = targetSchema?.schema;
               }
+              targetSchemaName = targetSchema?.schema;
 
               joins.push({
                 alias,
@@ -3919,10 +3942,28 @@ WHERE ${whereClause}`.trim();
     }
   ): { sql: string; params: any[] } {
     const schema = this._getSchema();
+    const schemaRegistry = this._getSchemaRegistry();
     const mainTableColumns = new Set<string>();
     const selectParts: string[] = [];
     const mockEntity = this.createMockEntity();
     const selection = (returning as Function)(mockEntity);
+
+    // Helper to get FK db column name from a schema
+    const getFkDbColumnName = (sourceSchema: TableSchema, fkPropName: string): string => {
+      const colEntry = Object.entries(sourceSchema.columns).find(([propName, _]) => propName === fkPropName);
+      if (colEntry) {
+        const config = (colEntry[1] as any).build();
+        return config.name;
+      }
+      return fkPropName; // Fallback to property name
+    };
+
+    // Build a map of alias -> source table name for FK lookups
+    const aliasToSourceTable = new Map<string, string>();
+    aliasToSourceTable.set(schema.name, schema.name);
+    for (const join of navigationInfo.joins) {
+      aliasToSourceTable.set(join.alias, join.targetTable);
+    }
 
     for (const [alias, field] of Object.entries(selection)) {
       if (field && typeof field === 'object' && '__dbColumnName' in field) {
@@ -3938,15 +3979,13 @@ WHERE ${whereClause}`.trim();
       }
     }
 
-    // Include foreign keys needed for joins
+    // Include foreign keys needed for joins - only for joins from main table
     for (const join of navigationInfo.joins) {
-      for (const fk of join.foreignKeys) {
-        const colEntry = Object.entries(schema.columns).find(([propName, _]) => propName === fk);
-        if (colEntry) {
-          const config = (colEntry[1] as any).build();
-          mainTableColumns.add(config.name);
-        } else {
-          mainTableColumns.add(fk);
+      // Only add FK to mainTableColumns if the join source is the main table
+      if (join.sourceAlias === schema.name || !join.sourceAlias) {
+        for (const fk of join.foreignKeys) {
+          const fkDbCol = getFkDbColumnName(schema, fk);
+          mainTableColumns.add(fkDbCol);
         }
       }
     }
@@ -3967,17 +4006,16 @@ WHERE ${whereClause}`.trim();
         const fk = join.foreignKeys[i];
         const match = join.matches[i] || 'id';
 
-        let fkDbCol = fk;
-        const colEntry = Object.entries(schema.columns).find(([propName, _]) => propName === fk);
-        if (colEntry) {
-          const config = (colEntry[1] as any).build();
-          fkDbCol = config.name;
-        }
-
         if (join.sourceAlias === schema.name || !join.sourceAlias) {
+          // FK is on main table - look up db column name from main schema
+          const fkDbCol = getFkDbColumnName(schema, fk);
           joinConditions.push(`"__mutation__"."${fkDbCol}" = "${join.alias}"."${match}"`);
         } else {
-          joinConditions.push(`"${join.sourceAlias}"."${fk}" = "${join.alias}"."${match}"`);
+          // FK is on an intermediate joined table - look up from its schema
+          const sourceTableName = aliasToSourceTable.get(join.sourceAlias);
+          const sourceSchema = sourceTableName ? schemaRegistry.get(sourceTableName) : undefined;
+          const fkDbCol = sourceSchema ? getFkDbColumnName(sourceSchema, fk) : fk;
+          joinConditions.push(`"${join.sourceAlias}"."${fkDbCol}" = "${join.alias}"."${match}"`);
         }
       }
 

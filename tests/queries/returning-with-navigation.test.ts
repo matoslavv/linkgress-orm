@@ -402,6 +402,381 @@ describe('Navigation properties in RETURNING statements', () => {
     });
   });
 
+  describe('multi-level navigation in returning', () => {
+    test('should support 2-level navigation: orderTask -> task -> level', async () => {
+      // Setup: User -> TaskLevel -> Task -> Order -> OrderTask
+      const user = await db.users.insert({
+        username: 'multilevel_2_test',
+        email: 'multilevel2@test.com',
+        age: 30,
+        isActive: true,
+      }).returning();
+
+      const taskLevel = await db.taskLevels.insert({
+        name: 'Urgent Priority',
+        createdById: user.id,
+      }).returning();
+
+      const task = await db.tasks.insert({
+        title: 'Multi-Level Task',
+        status: 'pending',
+        priority: 'high',
+        levelId: taskLevel.id,
+      }).returning();
+
+      const order = await db.orders.insert({
+        userId: user.id,
+        status: 'pending',
+        totalAmount: 150.00,
+      }).returning();
+
+      // Insert orderTask and return 2-level navigation (task -> level)
+      const inserted = await db.orderTasks
+        .insert({
+          orderId: order.id,
+          taskId: task.id,
+          sortOrder: 1,
+        })
+        .returning(ot => ({
+          orderId: ot.orderId,
+          taskId: ot.taskId,
+          taskTitle: ot.task!.title,
+          taskStatus: ot.task!.status,
+          levelName: ot.task!.level!.name,  // 2-level: task -> level
+        }));
+
+      expect(inserted).toBeDefined();
+      expect(inserted.orderId).toBe(order.id);
+      expect(inserted.taskId).toBe(task.id);
+      expect(inserted.taskTitle).toBe('Multi-Level Task');
+      expect(inserted.taskStatus).toBe('pending');
+      expect(inserted.levelName).toBe('Urgent Priority');
+
+      // Cleanup
+      await db.orderTasks.where(ot => and(eq(ot.orderId, order.id), eq(ot.taskId, task.id))).delete();
+      await db.orders.where(o => eq(o.id, order.id)).delete();
+      await db.tasks.where(t => eq(t.id, task.id)).delete();
+      await db.taskLevels.where(tl => eq(tl.id, taskLevel.id)).delete();
+      await db.users.where(u => eq(u.id, user.id)).delete();
+    });
+
+    test('should support 3-level navigation: orderTask -> task -> level -> createdBy', async () => {
+      // Setup: User -> TaskLevel -> Task -> Order -> OrderTask
+      const user = await db.users.insert({
+        username: 'multilevel_3_test',
+        email: 'multilevel3@test.com',
+        age: 35,
+        isActive: true,
+      }).returning();
+
+      const taskLevel = await db.taskLevels.insert({
+        name: 'Critical Level',
+        createdById: user.id,
+      }).returning();
+
+      const task = await db.tasks.insert({
+        title: 'Deep Navigation Task',
+        status: 'processing',
+        priority: 'high',
+        levelId: taskLevel.id,
+      }).returning();
+
+      const order = await db.orders.insert({
+        userId: user.id,
+        status: 'processing',
+        totalAmount: 300.00,
+      }).returning();
+
+      // Insert orderTask and return 3-level navigation (task -> level -> createdBy)
+      const inserted = await db.orderTasks
+        .insert({
+          orderId: order.id,
+          taskId: task.id,
+          sortOrder: 2,
+        })
+        .returning(ot => ({
+          orderId: ot.orderId,
+          taskId: ot.taskId,
+          taskTitle: ot.task!.title,
+          levelName: ot.task!.level!.name,               // 2-level
+          creatorUsername: ot.task!.level!.createdBy!.username,  // 3-level: task -> level -> createdBy
+          creatorEmail: ot.task!.level!.createdBy!.email,        // 3-level
+        }));
+
+      expect(inserted).toBeDefined();
+      expect(inserted.orderId).toBe(order.id);
+      expect(inserted.taskId).toBe(task.id);
+      expect(inserted.taskTitle).toBe('Deep Navigation Task');
+      expect(inserted.levelName).toBe('Critical Level');
+      expect(inserted.creatorUsername).toBe('multilevel_3_test');
+      expect(inserted.creatorEmail).toBe('multilevel3@test.com');
+
+      // Cleanup
+      await db.orderTasks.where(ot => and(eq(ot.orderId, order.id), eq(ot.taskId, task.id))).delete();
+      await db.orders.where(o => eq(o.id, order.id)).delete();
+      await db.tasks.where(t => eq(t.id, task.id)).delete();
+      await db.taskLevels.where(tl => eq(tl.id, taskLevel.id)).delete();
+      await db.users.where(u => eq(u.id, user.id)).delete();
+    });
+
+    test('should support multi-level navigation with insertBulk', async () => {
+      // Setup
+      const user = await db.users.insert({
+        username: 'bulk_multilevel_test',
+        email: 'bulk_multilevel@test.com',
+        age: 40,
+        isActive: true,
+      }).returning();
+
+      const taskLevel = await db.taskLevels.insert({
+        name: 'Bulk Test Level',
+        createdById: user.id,
+      }).returning();
+
+      const task1 = await db.tasks.insert({
+        title: 'Bulk Task 1',
+        status: 'pending',
+        priority: 'low',
+        levelId: taskLevel.id,
+      }).returning();
+
+      const task2 = await db.tasks.insert({
+        title: 'Bulk Task 2',
+        status: 'pending',
+        priority: 'medium',
+        levelId: taskLevel.id,
+      }).returning();
+
+      const order = await db.orders.insert({
+        userId: user.id,
+        status: 'pending',
+        totalAmount: 500.00,
+      }).returning();
+
+      // Bulk insert orderTasks and return multi-level navigation
+      const inserted = await db.orderTasks
+        .insertBulk([
+          { orderId: order.id, taskId: task1.id, sortOrder: 1 },
+          { orderId: order.id, taskId: task2.id, sortOrder: 2 },
+        ])
+        .returning(ot => ({
+          orderId: ot.orderId,
+          taskId: ot.taskId,
+          taskTitle: ot.task!.title,
+          levelName: ot.task!.level!.name,
+          creatorUsername: ot.task!.level!.createdBy!.username,
+        }));
+
+      expect(inserted.length).toBe(2);
+
+      // Sort by taskId for consistent assertions
+      const sorted = inserted.sort((a, b) => a.taskId - b.taskId);
+
+      expect(sorted[0].taskTitle).toBe('Bulk Task 1');
+      expect(sorted[0].levelName).toBe('Bulk Test Level');
+      expect(sorted[0].creatorUsername).toBe('bulk_multilevel_test');
+
+      expect(sorted[1].taskTitle).toBe('Bulk Task 2');
+      expect(sorted[1].levelName).toBe('Bulk Test Level');
+      expect(sorted[1].creatorUsername).toBe('bulk_multilevel_test');
+
+      // Cleanup
+      await db.orderTasks.where(ot => eq(ot.orderId, order.id)).delete();
+      await db.orders.where(o => eq(o.id, order.id)).delete();
+      await db.tasks.where(t => eq(t.id, task1.id)).delete();
+      await db.tasks.where(t => eq(t.id, task2.id)).delete();
+      await db.taskLevels.where(tl => eq(tl.id, taskLevel.id)).delete();
+      await db.users.where(u => eq(u.id, user.id)).delete();
+    });
+
+    test('should support multi-level navigation with update().returning()', async () => {
+      // Setup
+      const user = await db.users.insert({
+        username: 'update_multilevel_test',
+        email: 'update_multilevel@test.com',
+        age: 45,
+        isActive: true,
+      }).returning();
+
+      const taskLevel = await db.taskLevels.insert({
+        name: 'Update Test Level',
+        createdById: user.id,
+      }).returning();
+
+      const task = await db.tasks.insert({
+        title: 'Update Test Task',
+        status: 'pending',
+        priority: 'low',
+        levelId: taskLevel.id,
+      }).returning();
+
+      const order = await db.orders.insert({
+        userId: user.id,
+        status: 'pending',
+        totalAmount: 200.00,
+      }).returning();
+
+      await db.orderTasks.insert({
+        orderId: order.id,
+        taskId: task.id,
+        sortOrder: 1,
+      });
+
+      // Update and return multi-level navigation
+      const updated = await db.orderTasks
+        .where(ot => and(eq(ot.orderId, order.id), eq(ot.taskId, task.id)))
+        .update({ sortOrder: 99 })
+        .returning(ot => ({
+          orderId: ot.orderId,
+          sortOrder: ot.sortOrder,
+          taskTitle: ot.task!.title,
+          levelName: ot.task!.level!.name,
+          creatorEmail: ot.task!.level!.createdBy!.email,
+        }));
+
+      expect(updated.length).toBe(1);
+      expect(updated[0].sortOrder).toBe(99);
+      expect(updated[0].taskTitle).toBe('Update Test Task');
+      expect(updated[0].levelName).toBe('Update Test Level');
+      expect(updated[0].creatorEmail).toBe('update_multilevel@test.com');
+
+      // Cleanup
+      await db.orderTasks.where(ot => and(eq(ot.orderId, order.id), eq(ot.taskId, task.id))).delete();
+      await db.orders.where(o => eq(o.id, order.id)).delete();
+      await db.tasks.where(t => eq(t.id, task.id)).delete();
+      await db.taskLevels.where(tl => eq(tl.id, taskLevel.id)).delete();
+      await db.users.where(u => eq(u.id, user.id)).delete();
+    });
+
+    test('should support multi-level navigation with delete().returning()', async () => {
+      // Setup
+      const user = await db.users.insert({
+        username: 'delete_multilevel_test',
+        email: 'delete_multilevel@test.com',
+        age: 50,
+        isActive: true,
+      }).returning();
+
+      const taskLevel = await db.taskLevels.insert({
+        name: 'Delete Test Level',
+        createdById: user.id,
+      }).returning();
+
+      const task = await db.tasks.insert({
+        title: 'Delete Test Task',
+        status: 'completed',
+        priority: 'high',
+        levelId: taskLevel.id,
+      }).returning();
+
+      const order = await db.orders.insert({
+        userId: user.id,
+        status: 'completed',
+        totalAmount: 100.00,
+      }).returning();
+
+      await db.orderTasks.insert({
+        orderId: order.id,
+        taskId: task.id,
+        sortOrder: 5,
+      });
+
+      // Delete and return multi-level navigation
+      const deleted = await db.orderTasks
+        .where(ot => and(eq(ot.orderId, order.id), eq(ot.taskId, task.id)))
+        .delete()
+        .returning(ot => ({
+          orderId: ot.orderId,
+          taskId: ot.taskId,
+          taskTitle: ot.task!.title,
+          taskPriority: ot.task!.priority,
+          levelName: ot.task!.level!.name,
+          creatorUsername: ot.task!.level!.createdBy!.username,
+          creatorAge: ot.task!.level!.createdBy!.age,
+        }));
+
+      expect(deleted.length).toBe(1);
+      expect(deleted[0].orderId).toBe(order.id);
+      expect(deleted[0].taskId).toBe(task.id);
+      expect(deleted[0].taskTitle).toBe('Delete Test Task');
+      expect(deleted[0].taskPriority).toBe('high');
+      expect(deleted[0].levelName).toBe('Delete Test Level');
+      expect(deleted[0].creatorUsername).toBe('delete_multilevel_test');
+      expect(deleted[0].creatorAge).toBe(50);
+
+      // Cleanup
+      await db.orders.where(o => eq(o.id, order.id)).delete();
+      await db.tasks.where(t => eq(t.id, task.id)).delete();
+      await db.taskLevels.where(tl => eq(tl.id, taskLevel.id)).delete();
+      await db.users.where(u => eq(u.id, user.id)).delete();
+    });
+
+    test('should support mixed single and multi-level navigation paths', async () => {
+      // Setup
+      const user = await db.users.insert({
+        username: 'mixed_nav_test',
+        email: 'mixed_nav@test.com',
+        age: 55,
+        isActive: true,
+      }).returning();
+
+      const taskLevel = await db.taskLevels.insert({
+        name: 'Mixed Nav Level',
+        createdById: user.id,
+      }).returning();
+
+      const task = await db.tasks.insert({
+        title: 'Mixed Nav Task',
+        status: 'pending',
+        priority: 'medium',
+        levelId: taskLevel.id,
+      }).returning();
+
+      const order = await db.orders.insert({
+        userId: user.id,
+        status: 'pending',
+        totalAmount: 250.00,
+      }).returning();
+
+      // Insert and return mixed navigation paths:
+      // - Single-level: order -> user
+      // - Multi-level: task -> level -> createdBy
+      const inserted = await db.orderTasks
+        .insert({
+          orderId: order.id,
+          taskId: task.id,
+          sortOrder: 3,
+        })
+        .returning(ot => ({
+          orderId: ot.orderId,
+          taskId: ot.taskId,
+          // Single-level navigation
+          orderStatus: ot.order!.status,
+          orderUserName: ot.order!.user!.username,  // 2-level via order
+          // Multi-level navigation via task
+          taskTitle: ot.task!.title,
+          levelName: ot.task!.level!.name,
+          levelCreatorUsername: ot.task!.level!.createdBy!.username,
+        }));
+
+      expect(inserted).toBeDefined();
+      expect(inserted.orderId).toBe(order.id);
+      expect(inserted.taskId).toBe(task.id);
+      expect(inserted.orderStatus).toBe('pending');
+      expect(inserted.orderUserName).toBe('mixed_nav_test');
+      expect(inserted.taskTitle).toBe('Mixed Nav Task');
+      expect(inserted.levelName).toBe('Mixed Nav Level');
+      expect(inserted.levelCreatorUsername).toBe('mixed_nav_test');
+
+      // Cleanup
+      await db.orderTasks.where(ot => and(eq(ot.orderId, order.id), eq(ot.taskId, task.id))).delete();
+      await db.orders.where(o => eq(o.id, order.id)).delete();
+      await db.tasks.where(t => eq(t.id, task.id)).delete();
+      await db.taskLevels.where(tl => eq(tl.id, taskLevel.id)).delete();
+      await db.users.where(u => eq(u.id, user.id)).delete();
+    });
+  });
+
   describe('edge cases', () => {
     test('should handle null navigation property gracefully (LEFT JOIN)', async () => {
       // Create user without any related data that would be joined

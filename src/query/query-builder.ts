@@ -2874,6 +2874,23 @@ export class SelectQueryBuilder<TSelection> {
     const selectedMock = this.selector(mockRow);
     const selection = (returning as Function)(selectedMock as TSelection);
 
+    // Helper to get FK db column name from a schema
+    const getFkDbColumnName = (sourceSchema: TableSchema, fkPropName: string): string => {
+      const colEntry = Object.entries(sourceSchema.columns).find(([propName, _]) => propName === fkPropName);
+      if (colEntry) {
+        const config = (colEntry[1] as any).build();
+        return config.name;
+      }
+      return fkPropName; // Fallback to property name
+    };
+
+    // Build a map of alias -> source table name for FK lookups
+    const aliasToSourceTable = new Map<string, string>();
+    aliasToSourceTable.set(this.schema.name, this.schema.name);
+    for (const join of navigationInfo.joins) {
+      aliasToSourceTable.set(join.alias, join.targetTable);
+    }
+
     // For each selected field, determine if it's from main table or navigation
     for (const [alias, field] of Object.entries(selection)) {
       if (field && typeof field === 'object' && '__dbColumnName' in field) {
@@ -2891,31 +2908,13 @@ export class SelectQueryBuilder<TSelection> {
       }
     }
 
-    // We also need to include foreign keys for joins that aren't already in the selection
+    // Include foreign keys needed for joins - only for joins from main table
     for (const join of navigationInfo.joins) {
-      for (const fk of join.foreignKeys) {
-        // Find the db column name for this foreign key
-        const colEntry = Object.entries(this.schema.columns).find(([propName, _]) => propName === fk);
-        if (colEntry) {
-          const config = (colEntry[1] as any).build();
-          const dbColName = config.name;
-          mainTableColumns.add(dbColName);
-        } else {
-          // FK might be the db column name directly
-          mainTableColumns.add(fk);
-        }
-      }
-    }
-
-    // Also include foreign keys from intermediate joins (join to another join)
-    for (const join of navigationInfo.joins) {
-      if (join.sourceAlias && join.sourceAlias !== this.schema.name) {
-        // This join comes from another join, we need to include those FK columns too
-        // Find the source join
-        const sourceJoin = navigationInfo.joins.find(j => j.alias === join.sourceAlias);
-        if (sourceJoin) {
-          // We need the source table's FK columns in our RETURNING if the source is the main table
-          // But if source is itself a navigation, we handle it in the outer SELECT
+      // Only add FK to mainTableColumns if the join source is the main table
+      if (join.sourceAlias === this.schema.name || !join.sourceAlias) {
+        for (const fk of join.foreignKeys) {
+          const fkDbCol = getFkDbColumnName(this.schema, fk);
+          mainTableColumns.add(fkDbCol);
         }
       }
     }
@@ -2929,7 +2928,6 @@ export class SelectQueryBuilder<TSelection> {
     // Build the JOINs for the outer SELECT
     const joinClauses: string[] = [];
     for (const join of navigationInfo.joins) {
-      const sourceAlias = join.sourceAlias === this.schema.name ? '__mutation__' : `"${join.sourceAlias}"`;
       const qualifiedJoinTable = this.getQualifiedTableName(join.targetTable, join.targetSchema);
 
       // Find the db column names for the foreign keys
@@ -2938,20 +2936,16 @@ export class SelectQueryBuilder<TSelection> {
         const fk = join.foreignKeys[i];
         const match = join.matches[i] || 'id';
 
-        // Convert property name to db column name for FK
-        let fkDbCol = fk;
-        const colEntry = Object.entries(this.schema.columns).find(([propName, _]) => propName === fk);
-        if (colEntry) {
-          const config = (colEntry[1] as any).build();
-          fkDbCol = config.name;
-        }
-
-        // For source that's the mutation CTE
         if (join.sourceAlias === this.schema.name || !join.sourceAlias) {
+          // FK is on main table - look up db column name from main schema
+          const fkDbCol = getFkDbColumnName(this.schema, fk);
           joinConditions.push(`"__mutation__"."${fkDbCol}" = "${join.alias}"."${match}"`);
         } else {
-          // Source is another joined table
-          joinConditions.push(`"${join.sourceAlias}"."${fk}" = "${join.alias}"."${match}"`);
+          // FK is on an intermediate joined table - look up from its schema
+          const sourceTableName = aliasToSourceTable.get(join.sourceAlias);
+          const sourceSchema = sourceTableName && this.schemaRegistry ? this.schemaRegistry.get(sourceTableName) : undefined;
+          const fkDbCol = sourceSchema ? getFkDbColumnName(sourceSchema, fk) : fk;
+          joinConditions.push(`"${join.sourceAlias}"."${fkDbCol}" = "${join.alias}"."${match}"`);
         }
       }
 
