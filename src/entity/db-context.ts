@@ -5,7 +5,7 @@ import { DbEntity, EntityConstructor, EntityMetadataStore } from './entity-base'
 import { DbModelConfig } from './model-config';
 import { JoinQueryBuilder } from '../query/join-builder';
 import { Condition, ConditionBuilder, SqlFragment, UnwrapSelection, FieldRef } from '../query/conditions';
-import { ResolveCollectionResults, CollectionQueryBuilder, ReferenceQueryBuilder, SelectQueryBuilder, QueryBuilder } from '../query/query-builder';
+import { ResolveCollectionResults, CollectionQueryBuilder, ReferenceQueryBuilder, SelectQueryBuilder, QueryBuilder, QueryContext } from '../query/query-builder';
 import { PreparedQuery } from '../query/prepared-query';
 import { InferRowType } from '../schema/row-type';
 import { DbSchemaManager } from '../migration/db-schema-manager';
@@ -2798,7 +2798,7 @@ export class DbEntityTable<TEntity extends DbEntity> {
         insertSql += ' ON CONFLICT DO NOTHING';
       }
 
-      const { sql, params: queryParams } = this.buildReturningWithNavigation(
+      const { sql, params: queryParams, nestedPaths } = this.buildReturningWithNavigation(
         insertSql,
         params,
         returning as any,
@@ -2809,7 +2809,7 @@ export class DbEntityTable<TEntity extends DbEntity> {
         ? await executor.query(sql, queryParams)
         : await client.query(sql, queryParams);
 
-      return this.mapReturningResultsWithNavigation(result.rows, navigationInfo.navigationFields);
+      return this.mapReturningResultsWithNavigation(result.rows, navigationInfo.navigationFields, nestedPaths);
     }
 
     // Standard RETURNING (no navigation properties)
@@ -3092,7 +3092,7 @@ export class DbEntityTable<TEntity extends DbEntity> {
 
     if (navigationInfo) {
       // Use CTE-based approach for navigation properties
-      const { sql: cteSql, params: queryParams } = this.buildReturningWithNavigation(
+      const { sql: cteSql, params: queryParams, nestedPaths } = this.buildReturningWithNavigation(
         sql,
         params,
         returning as any,
@@ -3103,7 +3103,7 @@ export class DbEntityTable<TEntity extends DbEntity> {
         ? await executor.query(cteSql, queryParams)
         : await client.query(cteSql, queryParams);
 
-      return this.mapReturningResultsWithNavigation(result.rows, navigationInfo.navigationFields);
+      return this.mapReturningResultsWithNavigation(result.rows, navigationInfo.navigationFields, nestedPaths);
     }
 
     // Standard RETURNING (no navigation properties)
@@ -3804,6 +3804,8 @@ WHERE ${whereClause}`.trim();
     selection: any;
     joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean; sourceAlias?: string }>;
     navigationFields: Map<string, { tableAlias: string; dbColumnName: string; schemaTable?: string }>;
+    nestedObjects: Map<string, any>;
+    collectionFields: Map<string, any>;
   } | null {
     if (returning === true) {
       return null;
@@ -3819,29 +3821,50 @@ WHERE ${whereClause}`.trim();
 
     const navigationFields = new Map<string, { tableAlias: string; dbColumnName: string; schemaTable?: string }>();
     const allTableAliases = new Set<string>();
+    const nestedObjects = new Map<string, any>();
+    const collectionFields = new Map<string, any>();
 
-    for (const [alias, field] of Object.entries(selection)) {
-      if (field && typeof field === 'object' && '__dbColumnName' in field && '__tableAlias' in field) {
-        const tableAlias = (field as any).__tableAlias as string;
-        if (tableAlias && tableAlias !== schema.name) {
-          allTableAliases.add(tableAlias);
-          navigationFields.set(alias, {
-            tableAlias,
-            dbColumnName: (field as any).__dbColumnName,
-            schemaTable: (field as any).__sourceTable,
-          });
-        }
-        if ('__navigationAliases' in field && Array.isArray((field as any).__navigationAliases)) {
-          for (const navAlias of (field as any).__navigationAliases) {
-            if (navAlias && navAlias !== schema.name) {
-              allTableAliases.add(navAlias);
+    // Recursively collect field refs and table aliases from selection
+    const collectFieldRefs = (obj: any, path: string = '') => {
+      for (const [key, field] of Object.entries(obj)) {
+        const fieldPath = path ? `${path}.${key}` : key;
+
+        if (field && typeof field === 'object') {
+          if ('__dbColumnName' in field) {
+            // Direct field reference (either main table or navigation)
+            const tableAlias = (field as any).__tableAlias as string | undefined;
+            if (tableAlias && tableAlias !== schema.name) {
+              // Navigation field
+              allTableAliases.add(tableAlias);
+              navigationFields.set(fieldPath, {
+                tableAlias,
+                dbColumnName: (field as any).__dbColumnName,
+                schemaTable: (field as any).__sourceTable,
+              });
             }
+            // Main table field - don't add to navigationFields
+            if ('__navigationAliases' in field && Array.isArray((field as any).__navigationAliases)) {
+              for (const navAlias of (field as any).__navigationAliases) {
+                if (navAlias && navAlias !== schema.name) {
+                  allTableAliases.add(navAlias);
+                }
+              }
+            }
+          } else if (field instanceof CollectionQueryBuilder) {
+            // CollectionQueryBuilder (.toList(), .firstOrDefault())
+            collectionFields.set(fieldPath, field);
+          } else if (!Array.isArray(field)) {
+            // Nested plain object - recurse into it
+            nestedObjects.set(fieldPath, field);
+            collectFieldRefs(field, fieldPath);
           }
         }
       }
-    }
+    };
 
-    if (navigationFields.size === 0) {
+    collectFieldRefs(selection);
+
+    if (navigationFields.size === 0 && nestedObjects.size === 0 && collectionFields.size === 0) {
       return null;
     }
 
@@ -3849,7 +3872,7 @@ WHERE ${whereClause}`.trim();
     const joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean; sourceAlias?: string }> = [];
     this.resolveJoinsForTableAliases(allTableAliases, joins, schema);
 
-    return { hasNavigation: true, selection, joins, navigationFields };
+    return { hasNavigation: true, selection, joins, navigationFields, nestedObjects, collectionFields };
   }
 
   /**
@@ -3939,12 +3962,15 @@ WHERE ${whereClause}`.trim();
       selection: any;
       joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean; sourceAlias?: string }>;
       navigationFields: Map<string, { tableAlias: string; dbColumnName: string; schemaTable?: string }>;
+      nestedObjects?: Map<string, any>;
+      collectionFields?: Map<string, any>;
     }
-  ): { sql: string; params: any[] } {
+  ): { sql: string; params: any[]; nestedPaths?: Set<string> } {
     const schema = this._getSchema();
     const schemaRegistry = this._getSchemaRegistry();
     const mainTableColumns = new Set<string>();
     const selectParts: string[] = [];
+    const nestedPaths = new Set<string>();
     const mockEntity = this.createMockEntity();
     const selection = (returning as Function)(mockEntity);
 
@@ -3965,19 +3991,93 @@ WHERE ${whereClause}`.trim();
       aliasToSourceTable.set(join.alias, join.targetTable);
     }
 
-    for (const [alias, field] of Object.entries(selection)) {
-      if (field && typeof field === 'object' && '__dbColumnName' in field) {
-        const tableAlias = (field as any).__tableAlias as string;
-        const dbColumnName = (field as any).__dbColumnName as string;
+    // Track collection subqueries for LATERAL JOINs
+    const collectionSubqueries: Array<{
+      fieldPath: string;
+      lateralAlias: string;
+      joinClause: string;
+      selectExpression: string;
+    }> = [];
+    let lateralCounter = 0;
+    // Track all params including those from collection subqueries
+    const allParams = [...mutationParams];
+    let currentParamCounter = mutationParams.length + 1;
 
-        if (!tableAlias || tableAlias === schema.name) {
-          mainTableColumns.add(dbColumnName);
-          selectParts.push(`"__mutation__"."${dbColumnName}" AS "${alias}"`);
-        } else {
-          selectParts.push(`"${tableAlias}"."${dbColumnName}" AS "${alias}"`);
+    // Build a QueryContext for collection subquery building
+    const buildCollectionContext = (): QueryContext => ({
+      ctes: new Map(),
+      cteCounter: lateralCounter,
+      paramCounter: currentParamCounter,
+      allParams: allParams,
+      collectionStrategy: 'lateral',
+    });
+
+    // Recursively process selection to build SELECT parts
+    const processSelection = (obj: any, path: string = '') => {
+      for (const [key, field] of Object.entries(obj)) {
+        const fieldPath = path ? `${path}.${key}` : key;
+
+        if (field && typeof field === 'object') {
+          if ('__dbColumnName' in field) {
+            // Direct field reference
+            const tableAlias = (field as any).__tableAlias as string;
+            const dbColumnName = (field as any).__dbColumnName as string;
+
+            if (!tableAlias || tableAlias === schema.name) {
+              mainTableColumns.add(dbColumnName);
+              selectParts.push(`"__mutation__"."${dbColumnName}" AS "${fieldPath}"`);
+            } else {
+              selectParts.push(`"${tableAlias}"."${dbColumnName}" AS "${fieldPath}"`);
+            }
+          } else if (field instanceof CollectionQueryBuilder || '__collectionResult' in field) {
+            // CollectionQueryBuilder (.toList(), .firstOrDefault())
+            // Build a correlated subquery that references __mutation__ instead of the source table
+            const collectionBuilder = field as CollectionQueryBuilder<any>;
+            const context = buildCollectionContext();
+
+            // Build the CTE/subquery using lateral strategy
+            const cteResult = collectionBuilder.buildCTE(context);
+            lateralCounter = context.cteCounter;
+            currentParamCounter = context.paramCounter; // Track new param index after collection subquery
+
+            // The lateral strategy returns either:
+            // 1. A correlated subquery in selectExpression (no join needed)
+            // 2. A LATERAL JOIN with joinClause and selectExpression
+            if (cteResult.joinClause && cteResult.joinClause.trim()) {
+              // LATERAL JOIN needed - rewrite to reference __mutation__ instead of source table
+              // The join clause format is: LEFT JOIN LATERAL (...) "lateral_N" ON true
+              // We need to replace references to the source table with __mutation__
+              const rewrittenJoinClause = this.rewriteCollectionJoinForMutation(
+                cteResult.joinClause,
+                schema.name,
+                '__mutation__'
+              );
+              collectionSubqueries.push({
+                fieldPath,
+                lateralAlias: cteResult.tableName || `lateral_${lateralCounter - 1}`,
+                joinClause: rewrittenJoinClause,
+                selectExpression: cteResult.selectExpression || `"${cteResult.tableName}".data`,
+              });
+              selectParts.push(`${cteResult.selectExpression || `"${cteResult.tableName}".data`} AS "${fieldPath}"`);
+            } else if (cteResult.selectExpression) {
+              // Correlated subquery in SELECT - rewrite source table references
+              const rewrittenExpr = this.rewriteCollectionExprForMutation(
+                cteResult.selectExpression,
+                schema.name,
+                '__mutation__'
+              );
+              selectParts.push(`${rewrittenExpr} AS "${fieldPath}"`);
+            }
+          } else if (!Array.isArray(field)) {
+            // Nested plain object - recurse into it and mark as nested path
+            nestedPaths.add(fieldPath);
+            processSelection(field, fieldPath);
+          }
         }
       }
-    }
+    };
+
+    processSelection(selection);
 
     // Include foreign keys needed for joins - only for joins from main table
     for (const join of navigationInfo.joins) {
@@ -3987,6 +4087,19 @@ WHERE ${whereClause}`.trim();
           const fkDbCol = getFkDbColumnName(schema, fk);
           mainTableColumns.add(fkDbCol);
         }
+      }
+    }
+
+    // Include 'id' column if there are collection subqueries (needed for correlation)
+    if (collectionSubqueries.length > 0 || (navigationInfo.collectionFields && navigationInfo.collectionFields.size > 0)) {
+      // Find the 'id' column db name
+      const idColEntry = Object.entries(schema.columns).find(([propName, _]) => propName === 'id');
+      if (idColEntry) {
+        const idDbCol = (idColEntry[1] as any).build().name;
+        mainTableColumns.add(idDbCol);
+      } else {
+        // Fallback to 'id' if not found in schema
+        mainTableColumns.add('id');
       }
     }
 
@@ -4023,6 +4136,11 @@ WHERE ${whereClause}`.trim();
       joinClauses.push(`${joinType} ${qualifiedJoinTable} AS "${join.alias}" ON ${joinConditions.join(' AND ')}`);
     }
 
+    // Add LATERAL JOINs for collections
+    for (const collection of collectionSubqueries) {
+      joinClauses.push(collection.joinClause);
+    }
+
     const sql = `WITH "__mutation__" AS (
   ${mutationWithReturning}
 )
@@ -4030,22 +4148,73 @@ SELECT ${selectParts.join(', ')}
 FROM "__mutation__"
 ${joinClauses.join('\n')}`;
 
-    return { sql, params: mutationParams };
+    return { sql, params: allParams, nestedPaths };
+  }
+
+  /**
+   * Rewrite a LATERAL JOIN clause to reference __mutation__ instead of the source table
+   * @internal
+   */
+  private rewriteCollectionJoinForMutation(
+    joinClause: string,
+    sourceTable: string,
+    mutationAlias: string
+  ): string {
+    // The LATERAL subquery correlates with the source table via foreign key
+    // Pattern: WHERE "lateral_N_relation"."fk" = "sourceTable"."id"
+    // We need to replace "sourceTable" with "__mutation__"
+    const sourcePattern = new RegExp(`"${sourceTable}"\\."`, 'g');
+    return joinClause.replace(sourcePattern, `"${mutationAlias}"."`);
+  }
+
+  /**
+   * Rewrite a correlated subquery expression to reference __mutation__ instead of the source table
+   * @internal
+   */
+  private rewriteCollectionExprForMutation(
+    expression: string,
+    sourceTable: string,
+    mutationAlias: string
+  ): string {
+    // Correlated subqueries reference the source table for correlation
+    // Pattern: WHERE ... = "sourceTable"."id"
+    // We need to replace "sourceTable" with "__mutation__"
+    const sourcePattern = new RegExp(`"${sourceTable}"\\."`, 'g');
+    return expression.replace(sourcePattern, `"${mutationAlias}"."`);
   }
 
   /**
    * Map RETURNING results with navigation properties
+   * Reconstructs nested objects from flat column paths
    * @internal
    */
   private mapReturningResultsWithNavigation<TResult>(
     rows: any[],
-    navigationFields: Map<string, { tableAlias: string; dbColumnName: string; schemaTable?: string }>
+    navigationFields: Map<string, { tableAlias: string; dbColumnName: string; schemaTable?: string }>,
+    nestedPaths?: Set<string>
   ): any[] {
     const schema = this._getSchema();
 
     return rows.map(row => {
       const mapped: any = {};
+
       for (const [key, value] of Object.entries(row)) {
+        // Handle nested paths (e.g., "invoicingPartner.id" -> { invoicingPartner: { id: value } })
+        if (key.includes('.')) {
+          const parts = key.split('.');
+          let current = mapped;
+          for (let i = 0; i < parts.length - 1; i++) {
+            const part = parts[i];
+            if (!(part in current)) {
+              current[part] = {};
+            }
+            current = current[part];
+          }
+          const finalKey = parts[parts.length - 1];
+          current[finalKey] = value;
+          continue;
+        }
+
         const navInfo = navigationFields.get(key);
         if (navInfo && navInfo.schemaTable) {
           // Try to find mapper from navigation target schema

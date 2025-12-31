@@ -777,6 +777,126 @@ describe('Navigation properties in RETURNING statements', () => {
     });
   });
 
+  describe('nested objects in returning', () => {
+    test('should support nested plain objects with navigation fields', async () => {
+      // Setup
+      const user = await db.users.insert({
+        username: 'nested_obj_test',
+        email: 'nested_obj@test.com',
+        age: 30,
+        isActive: true,
+      }).returning();
+
+      const order = await db.orders.insert({
+        userId: user.id,
+        status: 'pending',
+        totalAmount: 100.00,
+      }).returning();
+
+      // Insert post with nested object in returning
+      const inserted = await db.posts
+        .insert({
+          title: 'Nested Object Test',
+          content: 'Content',
+          userId: user.id,
+          views: 50,
+          publishTime: { hour: 10, minute: 30 },
+        })
+        .returning(p => ({
+          id: p.id,
+          title: p.title,
+          author: {
+            id: p.user!.id,
+            username: p.user!.username,
+            email: p.user!.email,
+          },
+        }));
+
+      expect(inserted).toBeDefined();
+      expect(inserted.id).toBeDefined();
+      expect(inserted.title).toBe('Nested Object Test');
+      expect(inserted.author).toBeDefined();
+      expect(inserted.author.id).toBe(user.id);
+      expect(inserted.author.username).toBe('nested_obj_test');
+      expect(inserted.author.email).toBe('nested_obj@test.com');
+
+      // Cleanup
+      await db.posts.where(p => eq(p.id, inserted.id)).delete();
+      await db.orders.where(o => eq(o.id, order.id)).delete();
+      await db.users.where(u => eq(u.id, user.id)).delete();
+    });
+
+    test('should support deeply nested objects', async () => {
+      // Setup
+      const user = await db.users.insert({
+        username: 'deep_nested_test',
+        email: 'deep_nested@test.com',
+        age: 35,
+        isActive: true,
+      }).returning();
+
+      const taskLevel = await db.taskLevels.insert({
+        name: 'Deep Nested Level',
+        createdById: user.id,
+      }).returning();
+
+      const task = await db.tasks.insert({
+        title: 'Deep Nested Task',
+        status: 'pending',
+        priority: 'high',
+        levelId: taskLevel.id,
+      }).returning();
+
+      const order = await db.orders.insert({
+        userId: user.id,
+        status: 'pending',
+        totalAmount: 200.00,
+      }).returning();
+
+      // Insert with deeply nested object structure
+      const inserted = await db.orderTasks
+        .insert({
+          orderId: order.id,
+          taskId: task.id,
+          sortOrder: 1,
+        })
+        .returning(ot => ({
+          orderId: ot.orderId,
+          taskId: ot.taskId,
+          taskInfo: {
+            title: ot.task!.title,
+            priority: ot.task!.priority,
+            level: {
+              name: ot.task!.level!.name,
+              creator: {
+                username: ot.task!.level!.createdBy!.username,
+                email: ot.task!.level!.createdBy!.email,
+              },
+            },
+          },
+        }));
+
+      expect(inserted).toBeDefined();
+      expect(inserted.orderId).toBe(order.id);
+      expect(inserted.taskId).toBe(task.id);
+      expect(inserted.taskInfo).toBeDefined();
+      expect(inserted.taskInfo.title).toBe('Deep Nested Task');
+      expect(inserted.taskInfo.priority).toBe('high');
+      expect(inserted.taskInfo.level).toBeDefined();
+      expect(inserted.taskInfo.level.name).toBe('Deep Nested Level');
+      expect(inserted.taskInfo.level.creator).toBeDefined();
+      expect(inserted.taskInfo.level.creator.username).toBe('deep_nested_test');
+      expect(inserted.taskInfo.level.creator.email).toBe('deep_nested@test.com');
+
+      // Cleanup
+      await db.orderTasks.where(ot => and(eq(ot.orderId, order.id), eq(ot.taskId, task.id))).delete();
+      await db.orders.where(o => eq(o.id, order.id)).delete();
+      await db.tasks.where(t => eq(t.id, task.id)).delete();
+      await db.taskLevels.where(tl => eq(tl.id, taskLevel.id)).delete();
+      await db.users.where(u => eq(u.id, user.id)).delete();
+    });
+  });
+
   describe('edge cases', () => {
     test('should handle null navigation property gracefully (LEFT JOIN)', async () => {
       // Create user without any related data that would be joined
@@ -846,6 +966,439 @@ describe('Navigation properties in RETURNING statements', () => {
 
       // Cleanup
       await db.users.where(u => eq(u.id, user.id)).delete();
+    });
+  });
+
+  describe('collection queries in returning', () => {
+    test('should support .toList() to fetch related collection in returning', async () => {
+      // Setup: Create a user with posts
+      const user = await db.users.insert({
+        username: 'collection_test',
+        email: 'collection@test.com',
+        age: 30,
+        isActive: true,
+      }).returning();
+
+      // Create posts for this user
+      await db.posts.insertBulk([
+        { title: 'Post 1', content: 'Content 1', userId: user.id, views: 10, publishTime: { hour: 8, minute: 0 } },
+        { title: 'Post 2', content: 'Content 2', userId: user.id, views: 20, publishTime: { hour: 9, minute: 0 } },
+      ]);
+
+      // Create another user to update
+      const user2 = await db.users.insert({
+        username: 'collection_update',
+        email: 'collection_update@test.com',
+        age: 25,
+        isActive: true,
+      }).returning();
+
+      // Create posts for user2
+      await db.posts.insertBulk([
+        { title: 'User2 Post 1', content: 'Content', userId: user2.id, views: 5, publishTime: { hour: 10, minute: 0 } },
+        { title: 'User2 Post 2', content: 'Content', userId: user2.id, views: 15, publishTime: { hour: 11, minute: 0 } },
+        { title: 'User2 Post 3', content: 'Content', userId: user2.id, views: 25, publishTime: { hour: 12, minute: 0 } },
+      ]);
+
+      // Update user2 and return their posts as a collection
+      // Note: Using 'as any' due to TypeScript limitation with EntityQuery type mapping for collections
+      const updated = await db.users
+        .where(u => eq(u.id, user2.id))
+        .update({ age: 26 })
+        .returning((u: any) => ({
+          id: u.id,
+          username: u.username,
+          posts: u.posts.select((p: any) => ({
+            title: p.title,
+            views: p.views,
+          })).toList(),
+        }));
+
+      expect(updated.length).toBe(1);
+      expect(updated[0].id).toBe(user2.id);
+      expect(updated[0].username).toBe('collection_update');
+      expect(updated[0].posts).toBeDefined();
+      expect(Array.isArray(updated[0].posts)).toBe(true);
+      expect(updated[0].posts.length).toBe(3);
+
+      // Verify post data
+      const titles = updated[0].posts.map((p: any) => p.title).sort();
+      expect(titles).toEqual(['User2 Post 1', 'User2 Post 2', 'User2 Post 3']);
+
+      // Cleanup
+      await db.posts.where(p => eq(p.userId, user.id)).delete();
+      await db.posts.where(p => eq(p.userId, user2.id)).delete();
+      await db.users.where(u => eq(u.id, user.id)).delete();
+      await db.users.where(u => eq(u.id, user2.id)).delete();
+    });
+
+    test('should support .firstOrDefault() to fetch single related item in returning', async () => {
+      // Setup
+      const user = await db.users.insert({
+        username: 'first_or_default_test',
+        email: 'first@test.com',
+        age: 35,
+        isActive: true,
+      }).returning();
+
+      // Create posts with different view counts
+      await db.posts.insertBulk([
+        { title: 'Low Views Post', content: 'Content', userId: user.id, views: 5, publishTime: { hour: 8, minute: 0 } },
+        { title: 'High Views Post', content: 'Content', userId: user.id, views: 100, publishTime: { hour: 9, minute: 0 } },
+        { title: 'Medium Views Post', content: 'Content', userId: user.id, views: 50, publishTime: { hour: 10, minute: 0 } },
+      ]);
+
+      // Update user and return their most viewed post using firstOrDefault
+      // Note: Using 'as any' due to TypeScript limitation with EntityQuery type mapping for collections
+      const updated = await db.users
+        .where(u => eq(u.id, user.id))
+        .update({ age: 36 })
+        .returning((u: any) => ({
+          id: u.id,
+          username: u.username,
+          topPost: u.posts
+            .select((p: any) => ({ title: p.title, views: p.views }))
+            .orderBy((p: any) => [[p.views, 'DESC']])
+            .firstOrDefault(),
+        }));
+
+      expect(updated.length).toBe(1);
+      expect(updated[0].id).toBe(user.id);
+      expect(updated[0].topPost).toBeDefined();
+      expect(updated[0].topPost.title).toBe('High Views Post');
+      expect(updated[0].topPost.views).toBe(100);
+
+      // Cleanup
+      await db.posts.where(p => eq(p.userId, user.id)).delete();
+      await db.users.where(u => eq(u.id, user.id)).delete();
+    });
+
+    test('should support collection with .where() filter in returning', async () => {
+      // Setup
+      const user = await db.users.insert({
+        username: 'filtered_collection',
+        email: 'filtered@test.com',
+        age: 40,
+        isActive: true,
+      }).returning();
+
+      // Create posts with different view counts
+      await db.posts.insertBulk([
+        { title: 'Popular Post 1', content: 'Content', userId: user.id, views: 100, publishTime: { hour: 8, minute: 0 } },
+        { title: 'Unpopular Post', content: 'Content', userId: user.id, views: 5, publishTime: { hour: 9, minute: 0 } },
+        { title: 'Popular Post 2', content: 'Content', userId: user.id, views: 200, publishTime: { hour: 10, minute: 0 } },
+      ]);
+
+      // Update user and return only their popular posts (views > 50)
+      // Note: Using 'as any' due to TypeScript limitation with EntityQuery type mapping for collections
+      const updated = await db.users
+        .where(u => eq(u.id, user.id))
+        .update({ age: 41 })
+        .returning((u: any) => ({
+          id: u.id,
+          popularPosts: u.posts
+            .where((p: any) => gt(p.views, 50))
+            .select((p: any) => ({ title: p.title, views: p.views }))
+            .toList(),
+        }));
+
+      expect(updated.length).toBe(1);
+      expect(updated[0].popularPosts).toBeDefined();
+      expect(updated[0].popularPosts.length).toBe(2);
+
+      const titles = updated[0].popularPosts.map((p: any) => p.title).sort();
+      expect(titles).toEqual(['Popular Post 1', 'Popular Post 2']);
+
+      // Cleanup
+      await db.posts.where(p => eq(p.userId, user.id)).delete();
+      await db.users.where(u => eq(u.id, user.id)).delete();
+    });
+
+    test('should handle empty collection in returning', async () => {
+      // Setup: Create user with no posts
+      const user = await db.users.insert({
+        username: 'empty_collection',
+        email: 'empty@test.com',
+        age: 45,
+        isActive: true,
+      }).returning();
+
+      // Update user and return their (empty) posts collection
+      // Note: Using 'as any' due to TypeScript limitation with EntityQuery type mapping for collections
+      const updated = await db.users
+        .where(u => eq(u.id, user.id))
+        .update({ age: 46 })
+        .returning((u: any) => ({
+          id: u.id,
+          posts: u.posts.select((p: any) => ({ title: p.title })).toList(),
+        }));
+
+      expect(updated.length).toBe(1);
+      expect(updated[0].posts).toBeDefined();
+      expect(Array.isArray(updated[0].posts)).toBe(true);
+      expect(updated[0].posts.length).toBe(0);
+
+      // Cleanup
+      await db.users.where(u => eq(u.id, user.id)).delete();
+    });
+
+    test('should handle null result from firstOrDefault when no matches', async () => {
+      // Setup: Create user with no posts
+      const user = await db.users.insert({
+        username: 'null_first',
+        email: 'null_first@test.com',
+        age: 50,
+        isActive: true,
+      }).returning();
+
+      // Update user and try to get first post (should be null)
+      // Note: Using 'as any' due to TypeScript limitation with EntityQuery type mapping for collections
+      const updated = await db.users
+        .where(u => eq(u.id, user.id))
+        .update({ age: 51 })
+        .returning((u: any) => ({
+          id: u.id,
+          firstPost: u.posts.select((p: any) => ({ title: p.title })).firstOrDefault(),
+        }));
+
+      expect(updated.length).toBe(1);
+      expect(updated[0].firstPost).toBeNull();
+
+      // Cleanup
+      await db.users.where(u => eq(u.id, user.id)).delete();
+    });
+
+    test('should support collection in insert().returning()', async () => {
+      // Insert a new user and return their (empty) posts collection
+      // This tests that collections work with insert().returning()
+      const inserted = await db.users
+        .insert({
+          username: 'insert_with_collection',
+          email: 'insert_coll@test.com',
+          age: 30,
+          isActive: true,
+        })
+        .returning((u: any) => ({
+          id: u.id,
+          username: u.username,
+          posts: u.posts.select((p: any) => ({
+            title: p.title,
+            views: p.views,
+          })).toList(),
+        }));
+
+      expect(inserted).toBeDefined();
+      expect(inserted.id).toBeDefined();
+      expect(inserted.username).toBe('insert_with_collection');
+      expect(inserted.posts).toBeDefined();
+      expect(Array.isArray(inserted.posts)).toBe(true);
+      expect(inserted.posts.length).toBe(0); // No posts yet for new user
+
+      // Now add some posts and verify with update
+      await db.posts.insertBulk([
+        { title: 'Post 1', content: 'Content', userId: inserted.id, views: 10, publishTime: { hour: 8, minute: 0 } },
+        { title: 'Post 2', content: 'Content', userId: inserted.id, views: 20, publishTime: { hour: 9, minute: 0 } },
+      ]);
+
+      // Verify posts are returned in update
+      const updated = await db.users
+        .where(u => eq(u.id, inserted.id))
+        .update({ age: 31 })
+        .returning((u: any) => ({
+          id: u.id,
+          posts: u.posts.select((p: any) => ({ title: p.title })).toList(),
+        }));
+
+      expect(updated.length).toBe(1);
+      expect(updated[0].posts.length).toBe(2);
+
+      // Cleanup
+      await db.posts.where(p => eq(p.userId, inserted.id)).delete();
+      await db.users.where(u => eq(u.id, inserted.id)).delete();
+    });
+
+    test('should support collection in insertBulk().returning()', async () => {
+      // Bulk insert users and return their (empty) posts collections
+      const inserted = await db.users
+        .insertBulk([
+          { username: 'bulk_coll_user1', email: 'bulk_coll1@test.com', age: 25, isActive: true },
+          { username: 'bulk_coll_user2', email: 'bulk_coll2@test.com', age: 30, isActive: true },
+        ])
+        .returning((u: any) => ({
+          id: u.id,
+          username: u.username,
+          posts: u.posts.select((p: any) => ({ title: p.title })).toList(),
+        }));
+
+      expect(inserted.length).toBe(2);
+
+      // All users should have empty posts (just inserted)
+      for (const user of inserted) {
+        expect(user.posts).toBeDefined();
+        expect(Array.isArray(user.posts)).toBe(true);
+        expect(user.posts.length).toBe(0);
+      }
+
+      // Find users by username
+      const user1 = inserted.find((u: any) => u.username === 'bulk_coll_user1')!;
+      const user2 = inserted.find((u: any) => u.username === 'bulk_coll_user2')!;
+
+      // Add posts and verify with update
+      await db.posts.insertBulk([
+        { title: 'User1 Post', content: 'Content', userId: user1.id, views: 50, publishTime: { hour: 8, minute: 0 } },
+        { title: 'User2 Post A', content: 'Content', userId: user2.id, views: 100, publishTime: { hour: 9, minute: 0 } },
+        { title: 'User2 Post B', content: 'Content', userId: user2.id, views: 200, publishTime: { hour: 10, minute: 0 } },
+      ]);
+
+      // Verify with update
+      const updated = await db.users
+        .where(u => eq(u.id, user1.id))
+        .update({ age: 26 })
+        .returning((u: any) => ({
+          id: u.id,
+          posts: u.posts.select((p: any) => ({ title: p.title })).toList(),
+        }));
+
+      expect(updated.length).toBe(1);
+      expect(updated[0].posts.length).toBe(1);
+      expect(updated[0].posts[0].title).toBe('User1 Post');
+
+      // Cleanup
+      await db.posts.where(p => eq(p.userId, user1.id)).delete();
+      await db.posts.where(p => eq(p.userId, user2.id)).delete();
+      await db.users.where(u => eq(u.id, user1.id)).delete();
+      await db.users.where(u => eq(u.id, user2.id)).delete();
+    });
+
+    test('should support collection in delete().returning()', async () => {
+      // Setup: Create user with posts and orders
+      const user = await db.users.insert({
+        username: 'delete_collection_test',
+        email: 'delete_coll@test.com',
+        age: 35,
+        isActive: true,
+      }).returning();
+
+      await db.posts.insertBulk([
+        { title: 'Delete Test Post 1', content: 'Content', userId: user.id, views: 10, publishTime: { hour: 8, minute: 0 } },
+        { title: 'Delete Test Post 2', content: 'Content', userId: user.id, views: 20, publishTime: { hour: 9, minute: 0 } },
+      ]);
+
+      // Delete posts first to avoid FK constraint, then delete user with collection in returning
+      await db.posts.where(p => eq(p.userId, user.id)).delete();
+
+      // Delete user and return their orders collection (empty)
+      const deleted = await db.users
+        .where(u => eq(u.id, user.id))
+        .delete()
+        .returning((u: any) => ({
+          id: u.id,
+          username: u.username,
+          orders: u.orders.select((o: any) => ({ id: o.id, status: o.status })).toList(),
+        }));
+
+      expect(deleted.length).toBe(1);
+      expect(deleted[0].id).toBe(user.id);
+      expect(deleted[0].username).toBe('delete_collection_test');
+      expect(deleted[0].orders).toBeDefined();
+      expect(Array.isArray(deleted[0].orders)).toBe(true);
+      expect(deleted[0].orders.length).toBe(0); // No orders for this user
+    });
+
+    test('should support collection in upsertBulk().returning()', async () => {
+      // Upsert users and return their posts collection
+      // First, create some users with upsertBulk
+      const upserted = await db.users
+        .upsertBulk(
+          [
+            { username: 'upsert_coll_user1', email: 'upsert_coll1@test.com', age: 40, isActive: true },
+            { username: 'upsert_coll_user2', email: 'upsert_coll2@test.com', age: 45, isActive: true },
+          ],
+          { primaryKey: 'id', updateColumns: ['age', 'isActive'] }
+        )
+        .returning((u: any) => ({
+          id: u.id,
+          username: u.username,
+          posts: u.posts.select((p: any) => ({ title: p.title })).toList(),
+        }));
+
+      expect(upserted.length).toBe(2);
+
+      // Both users should have empty posts (just created)
+      for (const user of upserted) {
+        expect(user.posts).toBeDefined();
+        expect(Array.isArray(user.posts)).toBe(true);
+        expect(user.posts.length).toBe(0);
+      }
+
+      const user1 = upserted.find((u: any) => u.username === 'upsert_coll_user1')!;
+      const user2 = upserted.find((u: any) => u.username === 'upsert_coll_user2')!;
+
+      // Add posts
+      await db.posts.insertBulk([
+        { title: 'Upsert User1 Post', content: 'Content', userId: user1.id, views: 15, publishTime: { hour: 8, minute: 0 } },
+        { title: 'Upsert User2 Post A', content: 'Content', userId: user2.id, views: 25, publishTime: { hour: 9, minute: 0 } },
+        { title: 'Upsert User2 Post B', content: 'Content', userId: user2.id, views: 35, publishTime: { hour: 10, minute: 0 } },
+      ]);
+
+      // Now upsert again (update) and verify posts are returned
+      const updated = await db.users
+        .upsertBulk(
+          [{ id: user1.id, username: 'upsert_coll_user1', email: 'upsert_coll1@test.com', age: 41, isActive: true }],
+          { primaryKey: 'id', updateColumns: ['age'] }
+        )
+        .returning((u: any) => ({
+          id: u.id,
+          posts: u.posts.select((p: any) => ({ title: p.title })).toList(),
+        }));
+
+      expect(updated.length).toBe(1);
+      expect(updated[0].posts.length).toBe(1);
+      expect(updated[0].posts[0].title).toBe('Upsert User1 Post');
+
+      // Cleanup
+      await db.posts.where(p => eq(p.userId, user1.id)).delete();
+      await db.posts.where(p => eq(p.userId, user2.id)).delete();
+      await db.users.where(u => eq(u.id, user1.id)).delete();
+      await db.users.where(u => eq(u.id, user2.id)).delete();
+    });
+
+    test('should support firstOrDefault in delete().returning()', async () => {
+      // Setup: Create user with posts
+      const user = await db.users.insert({
+        username: 'delete_first_test',
+        email: 'delete_first@test.com',
+        age: 45,
+        isActive: true,
+      }).returning();
+
+      await db.posts.insertBulk([
+        { title: 'Low Views', content: 'Content', userId: user.id, views: 5, publishTime: { hour: 8, minute: 0 } },
+        { title: 'Highest Views', content: 'Content', userId: user.id, views: 500, publishTime: { hour: 9, minute: 0 } },
+        { title: 'Medium Views', content: 'Content', userId: user.id, views: 50, publishTime: { hour: 10, minute: 0 } },
+      ]);
+
+      // Delete posts first to avoid FK constraint
+      await db.posts.where(p => eq(p.userId, user.id)).delete();
+
+      // Delete user and return their top order (via firstOrDefault)
+      // Since user has no orders, firstOrDefault should return null
+      const deleted = await db.users
+        .where(u => eq(u.id, user.id))
+        .delete()
+        .returning((u: any) => ({
+          id: u.id,
+          username: u.username,
+          topOrder: u.orders
+            .select((o: any) => ({ id: o.id, totalAmount: o.totalAmount }))
+            .orderBy((o: any) => [[o.totalAmount, 'DESC']])
+            .firstOrDefault(),
+        }));
+
+      expect(deleted.length).toBe(1);
+      expect(deleted[0].id).toBe(user.id);
+      expect(deleted[0].username).toBe('delete_first_test');
+      expect(deleted[0].topOrder).toBeNull(); // No orders
     });
   });
 });
