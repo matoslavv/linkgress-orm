@@ -2853,6 +2853,20 @@ export class SelectQueryBuilder<TSelection> {
           } else if (field instanceof CollectionQueryBuilder) {
             // CollectionQueryBuilder (.toList(), .firstOrDefault())
             collectionFields.set(fieldPath, field);
+            // Also extract the navigation path from the collection builder
+            // so we can add the necessary joins to reach the collection's source table
+            const collectionBuilder = field as any;
+            if (collectionBuilder.navigationPath && Array.isArray(collectionBuilder.navigationPath)) {
+              for (const navJoin of collectionBuilder.navigationPath) {
+                if (navJoin.alias && navJoin.alias !== this.schema.name) {
+                  allTableAliases.add(navJoin.alias);
+                }
+              }
+            }
+            // Also add the source table alias
+            if (collectionBuilder.sourceTable && collectionBuilder.sourceTable !== this.schema.name) {
+              allTableAliases.add(collectionBuilder.sourceTable);
+            }
           } else if (!Array.isArray(field)) {
             // Nested plain object - recurse into it
             nestedObjects.set(fieldPath, field);
@@ -2917,6 +2931,14 @@ export class SelectQueryBuilder<TSelection> {
       aliasToSourceTable.set(join.alias, join.targetTable);
     }
 
+    // Build a map of table name -> alias for collection subquery rewriting
+    // This allows us to rewrite collection subqueries to use the correct joined aliases
+    const tableToAlias = new Map<string, string>();
+    tableToAlias.set(this.schema.name, '__mutation__'); // Main table uses mutation CTE
+    for (const join of navigationInfo.joins) {
+      tableToAlias.set(join.targetTable, join.alias);
+    }
+
     // Track collection subqueries for LATERAL JOINs
     const collectionSubqueries: Array<{
       fieldPath: string;
@@ -2957,7 +2979,7 @@ export class SelectQueryBuilder<TSelection> {
             }
           } else if (field instanceof CollectionQueryBuilder) {
             // CollectionQueryBuilder (.toList(), .firstOrDefault())
-            // Build a correlated subquery that references __mutation__ instead of the source table
+            // Build a correlated subquery that references joined tables from the main query
             const collectionBuilder = field as CollectionQueryBuilder<any>;
             const context = buildCollectionContext();
 
@@ -2970,11 +2992,10 @@ export class SelectQueryBuilder<TSelection> {
             // 1. A correlated subquery in selectExpression (no join needed)
             // 2. A LATERAL JOIN with joinClause and selectExpression
             if (cteResult.joinClause && cteResult.joinClause.trim()) {
-              // LATERAL JOIN needed - rewrite to reference __mutation__ instead of source table
-              const rewrittenJoinClause = this.rewriteCollectionJoinForMutation(
+              // LATERAL JOIN needed - rewrite all table references to use correct aliases
+              const rewrittenJoinClause = this.rewriteCollectionTableReferences(
                 cteResult.joinClause,
-                this.schema.name,
-                '__mutation__'
+                tableToAlias
               );
               collectionSubqueries.push({
                 fieldPath,
@@ -2984,11 +3005,10 @@ export class SelectQueryBuilder<TSelection> {
               });
               selectParts.push(`${cteResult.selectExpression || `"${cteResult.tableName}".data`} AS "${fieldPath}"`);
             } else if (cteResult.selectExpression) {
-              // Correlated subquery in SELECT - rewrite source table references
-              const rewrittenExpr = this.rewriteCollectionExprForMutation(
+              // Correlated subquery in SELECT - rewrite all table references
+              const rewrittenExpr = this.rewriteCollectionTableReferences(
                 cteResult.selectExpression,
-                this.schema.name,
-                '__mutation__'
+                tableToAlias
               );
               selectParts.push(`${rewrittenExpr} AS "${fieldPath}"`);
             }
@@ -3078,29 +3098,29 @@ ${joinClauses.join('\n')}`;
   }
 
   /**
-   * Rewrite a LATERAL JOIN clause to reference __mutation__ instead of the source table
+   * Rewrite table references in a collection subquery to use the correct aliases
+   * from the main query's JOINs. This handles multi-level navigation where the
+   * collection is accessed through intermediate joined tables.
+   *
+   * @param expression - The SQL expression (join clause or select expression) to rewrite
+   * @param tableToAlias - Map of table names to their aliases in the main query
+   * @returns The rewritten expression with all table references updated
    * @internal
    */
-  private rewriteCollectionJoinForMutation(
-    joinClause: string,
-    sourceTable: string,
-    mutationAlias: string
-  ): string {
-    const sourcePattern = new RegExp(`"${sourceTable}"\\."`, 'g');
-    return joinClause.replace(sourcePattern, `"${mutationAlias}"."`);
-  }
-
-  /**
-   * Rewrite a correlated subquery expression to reference __mutation__ instead of the source table
-   * @internal
-   */
-  private rewriteCollectionExprForMutation(
+  private rewriteCollectionTableReferences(
     expression: string,
-    sourceTable: string,
-    mutationAlias: string
+    tableToAlias: Map<string, string>
   ): string {
-    const sourcePattern = new RegExp(`"${sourceTable}"\\."`, 'g');
-    return expression.replace(sourcePattern, `"${mutationAlias}"."`);
+    let result = expression;
+
+    // Rewrite each table reference to use the correct alias
+    // Pattern: "tableName"."columnName" -> "alias"."columnName"
+    for (const [tableName, alias] of tableToAlias) {
+      const pattern = new RegExp(`"${tableName}"\\."`, 'g');
+      result = result.replace(pattern, `"${alias}"."`);
+    }
+
+    return result;
   }
 
   /**
