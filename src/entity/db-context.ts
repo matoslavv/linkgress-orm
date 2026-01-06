@@ -2058,6 +2058,10 @@ export class DbEntityTable<TEntity extends DbEntity> {
    * const allKeys = db.users.getColumnKeys({ includeNavigation: true });
    * // Returns: ['id', 'username', 'email', 'posts', 'orders', ...]
    *
+   * // Exclude primary key columns (useful for updates)
+   * const updateableKeys = db.users.getColumnKeys({ includePrimaryKey: false });
+   * // Returns: ['username', 'email', ...] (without 'id')
+   *
    * // Use for dynamic property access
    * const user = await db.users.findOne(u => eq(u.id, 1));
    * for (const key of db.users.getColumnKeys()) {
@@ -2069,9 +2073,22 @@ export class DbEntityTable<TEntity extends DbEntity> {
    * // columnKeys[0] is typed as 'id' | 'username' | 'email' | ...
    * ```
    */
-  getColumnKeys(options?: { includeNavigation?: boolean }): ExtractDbColumnKeys<TEntity>[] {
+  getColumnKeys(options?: { includeNavigation?: boolean; includePrimaryKey?: boolean }): ExtractDbColumnKeys<TEntity>[] {
     const schema = this._getSchema();
-    const columnKeys = Object.keys(schema.columns);
+    let columnKeys: string[];
+
+    // Filter out primary keys if includePrimaryKey is explicitly false
+    if (options?.includePrimaryKey === false) {
+      columnKeys = [];
+      for (const [propName, colBuilder] of Object.entries(schema.columns)) {
+        const config = (colBuilder as any).build();
+        if (!config.primaryKey) {
+          columnKeys.push(propName);
+        }
+      }
+    } else {
+      columnKeys = Object.keys(schema.columns);
+    }
 
     if (options?.includeNavigation && schema.relations) {
       const relationKeys = Object.keys(schema.relations);

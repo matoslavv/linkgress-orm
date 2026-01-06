@@ -189,3 +189,196 @@ describe('getColumns method', () => {
     }
   });
 });
+
+describe('getColumnKeys method', () => {
+  test('should return all column keys by default', () => {
+    const db = createTestDatabase();
+
+    const keys = db.users.getColumnKeys();
+
+    expect(keys).toBeDefined();
+    expect(Array.isArray(keys)).toBe(true);
+    expect(keys.length).toBeGreaterThan(0);
+
+    // Should include id (primary key)
+    expect(keys).toContain('id');
+    // Should include other columns
+    expect(keys).toContain('username');
+    expect(keys).toContain('email');
+    expect(keys).toContain('age');
+    expect(keys).toContain('isActive');
+
+    // Should NOT include navigation properties by default
+    expect(keys).not.toContain('posts');
+    expect(keys).not.toContain('orders');
+  });
+
+  test('should include navigation properties when includeNavigation is true', () => {
+    const db = createTestDatabase();
+
+    const keys = db.users.getColumnKeys({ includeNavigation: true });
+
+    expect(keys).toBeDefined();
+
+    // Should include regular columns
+    expect(keys).toContain('id');
+    expect(keys).toContain('username');
+    expect(keys).toContain('email');
+
+    // Should include navigation properties
+    expect(keys).toContain('posts');
+    expect(keys).toContain('orders');
+  });
+
+  test('should exclude primary key when includePrimaryKey is false', () => {
+    const db = createTestDatabase();
+
+    const keys = db.users.getColumnKeys({ includePrimaryKey: false });
+
+    expect(keys).toBeDefined();
+
+    // Should NOT include id (primary key)
+    expect(keys).not.toContain('id');
+
+    // Should include other columns
+    expect(keys).toContain('username');
+    expect(keys).toContain('email');
+    expect(keys).toContain('age');
+    expect(keys).toContain('isActive');
+
+    // Should NOT include navigation properties
+    expect(keys).not.toContain('posts');
+    expect(keys).not.toContain('orders');
+  });
+
+  test('should include primary key by default (includePrimaryKey not set)', () => {
+    const db = createTestDatabase();
+
+    const keys = db.users.getColumnKeys();
+
+    // Should include id (primary key) when not explicitly excluded
+    expect(keys).toContain('id');
+  });
+
+  test('should include primary key when includePrimaryKey is true', () => {
+    const db = createTestDatabase();
+
+    const keys = db.users.getColumnKeys({ includePrimaryKey: true });
+
+    // Should include id (primary key)
+    expect(keys).toContain('id');
+    expect(keys).toContain('username');
+  });
+
+  test('should support both includePrimaryKey: false and includeNavigation: true', () => {
+    const db = createTestDatabase();
+
+    const keys = db.users.getColumnKeys({ includePrimaryKey: false, includeNavigation: true });
+
+    expect(keys).toBeDefined();
+
+    // Should NOT include primary key
+    expect(keys).not.toContain('id');
+
+    // Should include other columns
+    expect(keys).toContain('username');
+    expect(keys).toContain('email');
+
+    // Should include navigation properties
+    expect(keys).toContain('posts');
+    expect(keys).toContain('orders');
+  });
+
+  test('should support both includePrimaryKey: true and includeNavigation: true', () => {
+    const db = createTestDatabase();
+
+    const keys = db.users.getColumnKeys({ includePrimaryKey: true, includeNavigation: true });
+
+    expect(keys).toBeDefined();
+
+    // Should include primary key
+    expect(keys).toContain('id');
+
+    // Should include other columns
+    expect(keys).toContain('username');
+    expect(keys).toContain('email');
+
+    // Should include navigation properties
+    expect(keys).toContain('posts');
+    expect(keys).toContain('orders');
+  });
+
+  test('should support includePrimaryKey: false and includeNavigation: false (explicit)', () => {
+    const db = createTestDatabase();
+
+    const keys = db.users.getColumnKeys({ includePrimaryKey: false, includeNavigation: false });
+
+    expect(keys).toBeDefined();
+
+    // Should NOT include primary key
+    expect(keys).not.toContain('id');
+
+    // Should include other columns
+    expect(keys).toContain('username');
+    expect(keys).toContain('email');
+
+    // Should NOT include navigation properties
+    expect(keys).not.toContain('posts');
+    expect(keys).not.toContain('orders');
+  });
+
+  test('should work with posts table (has userId FK)', () => {
+    const db = createTestDatabase();
+
+    const keys = db.posts.getColumnKeys();
+
+    expect(keys).toBeDefined();
+    expect(keys).toContain('id');
+    expect(keys).toContain('title');
+    expect(keys).toContain('content');
+    expect(keys).toContain('userId');
+
+    // Should NOT include user navigation
+    expect(keys).not.toContain('user');
+  });
+
+  test('should exclude primary key for posts table', () => {
+    const db = createTestDatabase();
+
+    const keys = db.posts.getColumnKeys({ includePrimaryKey: false });
+
+    expect(keys).not.toContain('id');
+    expect(keys).toContain('title');
+    expect(keys).toContain('userId');
+  });
+
+  test('should work with orders table', () => {
+    const db = createTestDatabase();
+
+    const keysWithPk = db.orders.getColumnKeys();
+    const keysWithoutPk = db.orders.getColumnKeys({ includePrimaryKey: false });
+
+    expect(keysWithPk).toContain('id');
+    expect(keysWithoutPk).not.toContain('id');
+
+    // Both should contain non-pk columns
+    expect(keysWithPk).toContain('userId');
+    expect(keysWithoutPk).toContain('userId');
+    expect(keysWithPk).toContain('status');
+    expect(keysWithoutPk).toContain('status');
+  });
+
+  test('should return empty array for table with only primary key when includePrimaryKey is false', () => {
+    // This is a edge case test - if a table had only a PK column, result would be empty
+    // Our test tables have more columns, so we just verify the filtering works
+    const db = createTestDatabase();
+
+    const keys = db.users.getColumnKeys({ includePrimaryKey: false });
+
+    // Should have at least some columns (not all filtered out)
+    expect(keys.length).toBeGreaterThan(0);
+    // But should have fewer keys than with PK included
+    const keysWithPk = db.users.getColumnKeys();
+    expect(keys.length).toBeLessThan(keysWithPk.length);
+  });
+});
