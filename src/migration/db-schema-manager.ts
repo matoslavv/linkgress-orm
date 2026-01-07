@@ -48,13 +48,13 @@ type MigrationOperation =
   | { type: 'create_sequence'; config: SequenceConfig }
   | { type: 'create_table'; tableName: string; schema: TableSchema }
   | { type: 'drop_table'; tableName: string }
-  | { type: 'add_column'; tableName: string; columnName: string; config: ColumnConfig }
-  | { type: 'drop_column'; tableName: string; columnName: string }
-  | { type: 'alter_column'; tableName: string; columnName: string; from: DbColumnInfo; to: ColumnConfig }
-  | { type: 'create_index'; tableName: string; indexName: string; columns: string[]; isUnique?: boolean }
-  | { type: 'drop_index'; tableName: string; indexName: string }
-  | { type: 'create_foreign_key'; tableName: string; constraint: any }
-  | { type: 'drop_foreign_key'; tableName: string; constraintName: string };
+  | { type: 'add_column'; tableName: string; schema?: string; columnName: string; config: ColumnConfig }
+  | { type: 'drop_column'; tableName: string; schema?: string; columnName: string }
+  | { type: 'alter_column'; tableName: string; schema?: string; columnName: string; from: DbColumnInfo; to: ColumnConfig }
+  | { type: 'create_index'; tableName: string; schema?: string; indexName: string; columns: string[]; isUnique?: boolean }
+  | { type: 'drop_index'; tableName: string; schema?: string; indexName: string }
+  | { type: 'create_foreign_key'; tableName: string; schema?: string; constraint: any }
+  | { type: 'drop_foreign_key'; tableName: string; schema?: string; constraintName: string };
 
 /**
  * Database schema manager - handles schema creation, deletion, and automatic migrations
@@ -557,7 +557,7 @@ export class DbSchemaManager {
   private async createIndexes(tableName: string, tableSchema: TableSchema): Promise<void> {
     const indexes = tableSchema.indexes || [];
     for (const index of indexes) {
-      await this.executeCreateIndex(tableName, index.name, index.columns, index.isUnique);
+      await this.executeCreateIndex(tableName, index.name, index.columns, index.isUnique, tableSchema.schema);
     }
   }
 
@@ -731,7 +731,7 @@ export class DbSchemaManager {
         // Find columns to add
         for (const [colName, config] of modelColumns.entries()) {
           if (!existingColumns.has(colName)) {
-            operations.push({ type: 'add_column', tableName, columnName: colName, config });
+            operations.push({ type: 'add_column', tableName, schema: schema.schema, columnName: colName, config });
           }
         }
 
@@ -739,7 +739,7 @@ export class DbSchemaManager {
         for (const [colName, dbInfo] of existingColumns.entries()) {
           const modelConfig = modelColumns.get(colName);
           if (modelConfig && this.needsAlter(dbInfo, modelConfig)) {
-            operations.push({ type: 'alter_column', tableName, columnName: colName, from: dbInfo, to: modelConfig });
+            operations.push({ type: 'alter_column', tableName, schema: schema.schema, columnName: colName, from: dbInfo, to: modelConfig });
           }
         }
 
@@ -756,6 +756,7 @@ export class DbSchemaManager {
             operations.push({
               type: 'create_index',
               tableName,
+              schema: schema.schema,
               indexName: modelIndex.name,
               columns: modelIndex.columns,
               isUnique: modelIndex.isUnique
@@ -776,6 +777,7 @@ export class DbSchemaManager {
             operations.push({
               type: 'create_foreign_key',
               tableName,
+              schema: schema.schema,
               constraint: modelFk
             });
           }
@@ -842,6 +844,7 @@ export class DbSchemaManager {
             phase2Ops.push({
               type: 'create_foreign_key',
               tableName,
+              schema: schema.schema,
               constraint: fk
             });
           }
@@ -854,6 +857,7 @@ export class DbSchemaManager {
               phase2Ops.push({
                 type: 'create_foreign_key',
                 tableName,
+                schema: schema.schema,
                 constraint: {
                   name: `fk_${tableName}_${config.name}`,
                   columns: [config.name],
@@ -870,6 +874,7 @@ export class DbSchemaManager {
             phase3Ops.push({
               type: 'create_index',
               tableName,
+			  schema: schema.schema,
               indexName: index.name,
               columns: index.columns,
               isUnique: index.isUnique
@@ -962,40 +967,40 @@ export class DbSchemaManager {
         break;
 
       case 'add_column':
-        await this.executeAddColumn(operation.tableName, operation.columnName, operation.config);
+        await this.executeAddColumn(operation.tableName, operation.columnName, operation.config, operation.schema);
         break;
 
       case 'drop_column':
         if (await this.confirm(`Drop column "${operation.tableName}"."${operation.columnName}"? This will DELETE ALL DATA in the column.`)) {
-          await this.executeDropColumn(operation.tableName, operation.columnName);
+          await this.executeDropColumn(operation.tableName, operation.columnName, operation.schema);
         } else {
           console.log(`  ⊘ Skipped dropping column "${operation.tableName}"."${operation.columnName}"\n`);
         }
         break;
 
       case 'alter_column':
-        await this.executeAlterColumn(operation.tableName, operation.columnName, operation.from, operation.to);
+        await this.executeAlterColumn(operation.tableName, operation.columnName, operation.from, operation.to, operation.schema);
         break;
 
       case 'create_index':
-        await this.executeCreateIndex(operation.tableName, operation.indexName, operation.columns, operation.isUnique);
+        await this.executeCreateIndex(operation.tableName, operation.indexName, operation.columns, operation.isUnique, operation.schema);
         break;
 
       case 'drop_index':
         if (await this.confirm(`Drop index "${operation.indexName}"?`)) {
-          await this.executeDropIndex(operation.indexName);
+          await this.executeDropIndex(operation.indexName, operation.schema);
         } else {
           console.log(`  ⊘ Skipped dropping index "${operation.indexName}"\n`);
         }
         break;
 
       case 'create_foreign_key':
-        await this.executeCreateForeignKey(operation.tableName, operation.constraint);
+        await this.executeCreateForeignKey(operation.tableName, operation.constraint, operation.schema);
         break;
 
       case 'drop_foreign_key':
         if (await this.confirm(`Drop foreign key "${operation.constraintName}"?`)) {
-          await this.executeDropForeignKey(operation.tableName, operation.constraintName);
+          await this.executeDropForeignKey(operation.tableName, operation.constraintName, operation.schema);
         } else {
           console.log(`  ⊘ Skipped dropping foreign key "${operation.constraintName}"\n`);
         }
@@ -1075,8 +1080,9 @@ export class DbSchemaManager {
   /**
    * Execute add column
    */
-  private async executeAddColumn(tableName: string, columnName: string, config: ColumnConfig): Promise<void> {
-    console.log(`  Adding column "${tableName}"."${columnName}"...`);
+  private async executeAddColumn(tableName: string, columnName: string, config: ColumnConfig, schema?: string): Promise<void> {
+    const qualifiedTableName = this.getQualifiedTableName(tableName, schema);
+    console.log(`  Adding column ${qualifiedTableName}."${columnName}"...`);
 
     let def = `${config.type}`;
 
@@ -1100,25 +1106,27 @@ export class DbSchemaManager {
       def += ` DEFAULT ${this.formatDefaultValue(config.default)}`;
     }
 
-    const sql = `ALTER TABLE "${tableName}" ADD COLUMN "${columnName}" ${def}`;
+    const sql = `ALTER TABLE ${qualifiedTableName} ADD COLUMN "${columnName}" ${def}`;
     await this.client.query(sql);
-    console.log(`  ✓ Column "${tableName}"."${columnName}" added\n`);
+    console.log(`  ✓ Column ${qualifiedTableName}."${columnName}" added\n`);
   }
 
   /**
    * Execute drop column
    */
-  private async executeDropColumn(tableName: string, columnName: string): Promise<void> {
-    console.log(`  Dropping column "${tableName}"."${columnName}"...`);
-    await this.client.query(`ALTER TABLE "${tableName}" DROP COLUMN "${columnName}"`);
-    console.log(`  ✓ Column "${tableName}"."${columnName}" dropped\n`);
+  private async executeDropColumn(tableName: string, columnName: string, schema?: string): Promise<void> {
+    const qualifiedTableName = this.getQualifiedTableName(tableName, schema);
+    console.log(`  Dropping column ${qualifiedTableName}."${columnName}"...`);
+    await this.client.query(`ALTER TABLE ${qualifiedTableName} DROP COLUMN "${columnName}"`);
+    console.log(`  ✓ Column ${qualifiedTableName}."${columnName}" dropped\n`);
   }
 
   /**
    * Execute alter column
    */
-  private async executeAlterColumn(tableName: string, columnName: string, from: DbColumnInfo, to: ColumnConfig): Promise<void> {
-    console.log(`  Altering column "${tableName}"."${columnName}"...`);
+  private async executeAlterColumn(tableName: string, columnName: string, from: DbColumnInfo, to: ColumnConfig, schema?: string): Promise<void> {
+    const qualifiedTableName = this.getQualifiedTableName(tableName, schema);
+    console.log(`  Altering column ${qualifiedTableName}."${columnName}"...`);
     console.log(`    From: ${this.describeDbColumn(from)}`);
     console.log(`    To:   ${this.describeModelColumn(to)}`);
 
@@ -1129,7 +1137,7 @@ export class DbSchemaManager {
     const toType = this.normalizeType(to.type);
     if (fromType !== toType) {
       const typeDef = this.buildTypeDefinition(to);
-      await this.client.query(`ALTER TABLE "${tableName}" ALTER COLUMN "${columnName}" TYPE ${typeDef} USING "${columnName}"::${typeDef}`);
+      await this.client.query(`ALTER TABLE ${qualifiedTableName} ALTER COLUMN "${columnName}" TYPE ${typeDef} USING "${columnName}"::${typeDef}`);
       console.log(`    ✓ Type changed from ${fromType} to ${toType}`);
     }
 
@@ -1138,10 +1146,10 @@ export class DbSchemaManager {
     const toNullable = to.nullable;
     if (fromNullable !== toNullable) {
       if (toNullable) {
-        await this.client.query(`ALTER TABLE "${tableName}" ALTER COLUMN "${columnName}" DROP NOT NULL`);
+        await this.client.query(`ALTER TABLE ${qualifiedTableName} ALTER COLUMN "${columnName}" DROP NOT NULL`);
         console.log(`    ✓ Nullability changed to NULLABLE`);
       } else {
-        await this.client.query(`ALTER TABLE "${tableName}" ALTER COLUMN "${columnName}" SET NOT NULL`);
+        await this.client.query(`ALTER TABLE ${qualifiedTableName} ALTER COLUMN "${columnName}" SET NOT NULL`);
         console.log(`    ✓ Nullability changed to NOT NULL`);
       }
     }
@@ -1151,26 +1159,27 @@ export class DbSchemaManager {
     const toDefault = to.default !== undefined ? this.formatDefaultValue(to.default) : null;
     if (fromDefault !== toDefault) {
       if (toDefault !== null) {
-        await this.client.query(`ALTER TABLE "${tableName}" ALTER COLUMN "${columnName}" SET DEFAULT ${toDefault}`);
+        await this.client.query(`ALTER TABLE ${qualifiedTableName} ALTER COLUMN "${columnName}" SET DEFAULT ${toDefault}`);
         console.log(`    ✓ Default changed to ${toDefault}`);
       } else {
-        await this.client.query(`ALTER TABLE "${tableName}" ALTER COLUMN "${columnName}" DROP DEFAULT`);
+        await this.client.query(`ALTER TABLE ${qualifiedTableName} ALTER COLUMN "${columnName}" DROP DEFAULT`);
         console.log(`    ✓ Default removed`);
       }
     }
 
-    console.log(`  ✓ Column "${tableName}"."${columnName}" altered\n`);
+    console.log(`  ✓ Column ${qualifiedTableName}."${columnName}" altered\n`);
   }
 
   /**
    * Execute create index
    */
-  private async executeCreateIndex(tableName: string, indexName: string, columns: string[], isUnique?: boolean): Promise<void> {
+  private async executeCreateIndex(tableName: string, indexName: string, columns: string[], isUnique?: boolean, schema?: string): Promise<void> {
     const uniqueStr = isUnique ? 'UNIQUE ' : '';
-    console.log(`  Creating ${uniqueStr}index "${indexName}" on "${tableName}"...`);
+    const qualifiedTableName = this.getQualifiedTableName(tableName, schema);
+    console.log(`  Creating ${uniqueStr}index "${indexName}" on ${qualifiedTableName}...`);
 
     const columnList = columns.map(col => `"${col}"`).join(', ');
-    const sql = `CREATE ${uniqueStr}INDEX IF NOT EXISTS "${indexName}" ON "${tableName}" (${columnList})`;
+    const sql = `CREATE ${uniqueStr}INDEX IF NOT EXISTS "${indexName}" ON ${qualifiedTableName} (${columnList})`;
 
     await this.client.query(sql);
     console.log(`  ✓ ${uniqueStr}Index "${indexName}" created\n`);
@@ -1179,24 +1188,29 @@ export class DbSchemaManager {
   /**
    * Execute drop index
    */
-  private async executeDropIndex(indexName: string): Promise<void> {
-    console.log(`  Dropping index "${indexName}"...`);
-    await this.client.query(`DROP INDEX "${indexName}"`);
-    console.log(`  ✓ Index "${indexName}" dropped\n`);
+  private async executeDropIndex(indexName: string, schema?: string): Promise<void> {
+    const qualifiedIndexName = schema ? `"${schema}"."${indexName}"` : `"${indexName}"`;
+    console.log(`  Dropping index ${qualifiedIndexName}...`);
+    await this.client.query(`DROP INDEX ${qualifiedIndexName}`);
+    console.log(`  ✓ Index ${qualifiedIndexName} dropped\n`);
   }
 
   /**
    * Execute create foreign key
    */
-  private async executeCreateForeignKey(tableName: string, constraint: any): Promise<void> {
-    console.log(`  Creating foreign key constraint "${constraint.name}" on "${tableName}"...`);
+  private async executeCreateForeignKey(tableName: string, constraint: any, schema?: string): Promise<void> {
+    const qualifiedTableName = this.getQualifiedTableName(tableName, schema);
+    const referencedTableSchema = this.schemaRegistry?.get(constraint.referencedTable);
+    const qualifiedReferencedTable = this.getQualifiedTableName(constraint.referencedTable, referencedTableSchema?.schema);
+
+    console.log(`  Creating foreign key constraint "${constraint.name}" on ${qualifiedTableName}...`);
 
     const columnList = constraint.columns.map((col: string) => `"${col}"`).join(', ');
     const refColumnList = constraint.referencedColumns.map((col: string) => `"${col}"`).join(', ');
 
-    let sql = `ALTER TABLE "${tableName}" ADD CONSTRAINT "${constraint.name}" `;
+    let sql = `ALTER TABLE ${qualifiedTableName} ADD CONSTRAINT "${constraint.name}" `;
     sql += `FOREIGN KEY (${columnList}) `;
-    sql += `REFERENCES "${constraint.referencedTable}" (${refColumnList})`;
+    sql += `REFERENCES ${qualifiedReferencedTable} (${refColumnList})`;
 
     if (constraint.onDelete) {
       sql += ` ON DELETE ${constraint.onDelete.toUpperCase()}`;
@@ -1213,9 +1227,10 @@ export class DbSchemaManager {
   /**
    * Execute drop foreign key
    */
-  private async executeDropForeignKey(tableName: string, constraintName: string): Promise<void> {
-    console.log(`  Dropping foreign key constraint "${constraintName}"...`);
-    await this.client.query(`ALTER TABLE "${tableName}" DROP CONSTRAINT "${constraintName}"`);
+  private async executeDropForeignKey(tableName: string, constraintName: string, schema?: string): Promise<void> {
+    const qualifiedTableName = this.getQualifiedTableName(tableName, schema);
+    console.log(`  Dropping foreign key constraint "${constraintName}" from ${qualifiedTableName}...`);
+    await this.client.query(`ALTER TABLE ${qualifiedTableName} DROP CONSTRAINT "${constraintName}"`);
     console.log(`  ✓ Foreign key constraint "${constraintName}" dropped\n`);
   }
 
