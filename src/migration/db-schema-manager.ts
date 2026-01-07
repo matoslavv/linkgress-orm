@@ -1174,14 +1174,7 @@ export class DbSchemaManager {
    * Execute create index
    */
   private async executeCreateIndex(tableName: string, indexName: string, columns: string[], isUnique?: boolean, schema?: string): Promise<void> {
-	console.error(`executeCreateIndex called with tableName=${tableName}, indexName=${indexName}, columns=${columns.join(', ')}, isUnique=${isUnique}, schema=${schema}`);
-
     const uniqueStr = isUnique ? 'UNIQUE ' : '';
-
-	console.error(uniqueStr);
-
-
-
     const qualifiedTableName = this.getQualifiedTableName(tableName, schema);
     console.log(`  Creating ${uniqueStr}index "${indexName}" on ${qualifiedTableName}...`);
 
