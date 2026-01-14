@@ -11,6 +11,7 @@ import { DbCte, isCte } from './cte-builder';
 import { CollectionStrategyFactory } from './collection-strategy.factory';
 import type { CollectionAggregationConfig, SelectedField, NavigationJoin } from './collection-strategy.interface';
 import { UnionQueryBuilder } from './union-builder';
+import { FutureQuery, FutureSingleQuery, FutureCountQuery } from './future-query';
 
 /**
  * Field type categories for optimized result transformation
@@ -1649,6 +1650,144 @@ export class SelectQueryBuilder<TSelection> {
     context.paramCounter = queryContext.paramCounter;
 
     return sql;
+  }
+
+  /**
+   * Create a future query that will be executed later.
+   * Use with FutureQueryRunner.runAsync() for batch execution.
+   *
+   * @returns A FutureQuery that can be executed individually or in a batch
+   *
+   * @example
+   * ```typescript
+   * const q1 = db.users.select(u => ({ id: u.id, name: u.username })).future();
+   * const q2 = db.posts.select(p => ({ title: p.title })).future();
+   *
+   * // Execute in a single roundtrip
+   * const [users, posts] = await FutureQueryRunner.runAsync([q1, q2]);
+   * ```
+   */
+  future(): FutureQuery<ResolveCollectionResults<TSelection>> {
+    const context: QueryContext = {
+      ctes: new Map(),
+      cteCounter: 0,
+      paramCounter: 1,
+      allParams: [],
+      collectionStrategy: this.collectionStrategy,
+      executor: this.executor,
+    };
+
+    const mockRow = this._createMockRow();
+    const selectionResult = this.selector(mockRow);
+    const { sql, params, nestedPaths } = this.buildQuery(selectionResult, context);
+
+    // Create transform function that captures current state
+    const transformFn = (rows: any[]): ResolveCollectionResults<TSelection>[] => {
+      if (rows.length === 0) return [];
+
+      // Reconstruct nested objects if needed
+      let processedRows = rows;
+      if (nestedPaths.size > 0) {
+        processedRows = rows.map(row => this.reconstructNestedObjects(row, nestedPaths));
+      }
+
+      return this.transformResults(processedRows, selectionResult) as ResolveCollectionResults<TSelection>[];
+    };
+
+    return new FutureQuery<ResolveCollectionResults<TSelection>>(
+      sql,
+      params,
+      transformFn,
+      this.client,
+      this.executor
+    );
+  }
+
+  /**
+   * Create a future query that returns a single result or null.
+   * Use with FutureQueryRunner.runAsync() for batch execution.
+   *
+   * @returns A FutureSingleQuery that resolves to a single result or null
+   *
+   * @example
+   * ```typescript
+   * const q1 = db.users.where(u => eq(u.id, 1)).select(u => u).futureFirstOrDefault();
+   * const q2 = db.posts.where(p => eq(p.id, 5)).select(p => p).futureFirstOrDefault();
+   *
+   * const [user, post] = await FutureQueryRunner.runAsync([q1, q2]);
+   * // user: User | null
+   * // post: Post | null
+   * ```
+   */
+  futureFirstOrDefault(): FutureSingleQuery<ResolveCollectionResults<TSelection>> {
+    // Apply LIMIT 1 for efficiency
+    const originalLimit = this.limitValue;
+    this.limitValue = 1;
+
+    const context: QueryContext = {
+      ctes: new Map(),
+      cteCounter: 0,
+      paramCounter: 1,
+      allParams: [],
+      collectionStrategy: this.collectionStrategy,
+      executor: this.executor,
+    };
+
+    const mockRow = this._createMockRow();
+    const selectionResult = this.selector(mockRow);
+    const { sql, params, nestedPaths } = this.buildQuery(selectionResult, context);
+
+    // Restore original limit
+    this.limitValue = originalLimit;
+
+    // Create transform function
+    const transformFn = (rows: any[]): ResolveCollectionResults<TSelection>[] => {
+      if (rows.length === 0) return [];
+
+      let processedRows = rows;
+      if (nestedPaths.size > 0) {
+        processedRows = rows.map(row => this.reconstructNestedObjects(row, nestedPaths));
+      }
+
+      return this.transformResults(processedRows, selectionResult) as ResolveCollectionResults<TSelection>[];
+    };
+
+    return new FutureSingleQuery<ResolveCollectionResults<TSelection>>(
+      sql,
+      params,
+      transformFn,
+      this.client,
+      this.executor
+    );
+  }
+
+  /**
+   * Create a future query that returns a count.
+   * Use with FutureQueryRunner.runAsync() for batch execution.
+   *
+   * @returns A FutureCountQuery that resolves to a number
+   *
+   * @example
+   * ```typescript
+   * const q1 = db.users.futureCount();
+   * const q2 = db.posts.futureCount();
+   * const q3 = db.comments.where(c => eq(c.isPublished, true)).futureCount();
+   *
+   * const [userCount, postCount, commentCount] = await FutureQueryRunner.runAsync([q1, q2, q3]);
+   * ```
+   */
+  futureCount(): FutureCountQuery {
+    const context: QueryContext = {
+      ctes: new Map(),
+      cteCounter: 0,
+      paramCounter: 1,
+      allParams: [],
+      executor: this.executor,
+    };
+
+    const { sql, params } = this.buildAggregateQuery(context, 'count');
+
+    return new FutureCountQuery(sql, params, this.client, this.executor);
   }
 
   /**

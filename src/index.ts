@@ -48,6 +48,20 @@ export {
   isUnionQueryBuilder,
 } from './query/union-builder';
 
+// Future queries for batch execution
+export {
+  FutureQuery,
+  FutureSingleQuery,
+  FutureCountQuery,
+  FutureQueryRunner,
+  AnyFutureQuery,
+  FutureQueryResult,
+  FutureQueryResults,
+  isFutureQuery,
+  isFutureSingleQuery,
+  isFutureCountQuery,
+} from './query/future-query';
+
 // Prepared statements
 export {
   PreparedQuery,

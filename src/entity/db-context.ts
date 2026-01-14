@@ -13,6 +13,7 @@ import { DbSequence, SequenceConfig } from '../schema/sequence-builder';
 import type { DbCte } from '../query/cte-builder';
 import type { Subquery } from '../query/subquery';
 import type { UnionQueryBuilder } from '../query/union-builder';
+import type { FutureQuery, FutureSingleQuery, FutureCountQuery } from '../query/future-query';
 import {
   getQualifiedTableName,
   buildReturningColumnList,
@@ -1750,6 +1751,25 @@ export interface IEntityQueryable<TEntity extends DbEntity> {
   prepare<TParams extends Record<string, any> = Record<string, any>>(
     name: string
   ): PreparedQuery<UnwrapDbColumns<TEntity>, TParams>;
+
+  // Future query methods for batch execution
+  /**
+   * Create a future query that will be executed later.
+   * Use with FutureQueryRunner.runAsync() for batch execution in a single roundtrip.
+   */
+  future(): FutureQuery<UnwrapDbColumns<TEntity>>;
+
+  /**
+   * Create a future query that returns a single result or null.
+   * Use with FutureQueryRunner.runAsync() for batch execution.
+   */
+  futureFirstOrDefault(): FutureSingleQuery<UnwrapDbColumns<TEntity>>;
+
+  /**
+   * Create a future query that returns a count.
+   * Use with FutureQueryRunner.runAsync() for batch execution.
+   */
+  futureCount(): FutureCountQuery;
 }
 
 /**
@@ -1908,6 +1928,57 @@ export interface EntitySelectQueryBuilder<TEntity extends DbEntity, TSelection> 
   prepare<TParams extends Record<string, any> = Record<string, any>>(
     name: string
   ): PreparedQuery<ResolveCollectionResults<TSelection>, TParams>;
+
+  // Future query methods for batch execution
+  /**
+   * Create a future query that will be executed later.
+   * Use with FutureQueryRunner.runAsync() for batch execution in a single roundtrip.
+   *
+   * @returns A FutureQuery that can be executed individually or in a batch
+   *
+   * @example
+   * ```typescript
+   * const q1 = db.users.select(u => ({ id: u.id, name: u.username })).future();
+   * const q2 = db.posts.select(p => ({ title: p.title })).future();
+   *
+   * // Execute in a single roundtrip
+   * const [users, posts] = await FutureQueryRunner.runAsync([q1, q2]);
+   * ```
+   */
+  future(): FutureQuery<ResolveCollectionResults<TSelection>>;
+
+  /**
+   * Create a future query that returns a single result or null.
+   * Use with FutureQueryRunner.runAsync() for batch execution.
+   *
+   * @returns A FutureSingleQuery that resolves to a single result or null
+   *
+   * @example
+   * ```typescript
+   * const q1 = db.users.where(u => eq(u.id, 1)).futureFirstOrDefault();
+   * const q2 = db.posts.where(p => eq(p.id, 5)).futureFirstOrDefault();
+   *
+   * const [user, post] = await FutureQueryRunner.runAsync([q1, q2]);
+   * // user: User | null, post: Post | null
+   * ```
+   */
+  futureFirstOrDefault(): FutureSingleQuery<ResolveCollectionResults<TSelection>>;
+
+  /**
+   * Create a future query that returns a count.
+   * Use with FutureQueryRunner.runAsync() for batch execution.
+   *
+   * @returns A FutureCountQuery that resolves to a number
+   *
+   * @example
+   * ```typescript
+   * const q1 = db.users.futureCount();
+   * const q2 = db.posts.futureCount();
+   *
+   * const [userCount, postCount] = await FutureQueryRunner.runAsync([q1, q2]);
+   * ```
+   */
+  futureCount(): FutureCountQuery;
 }
 
 /**
@@ -2519,6 +2590,63 @@ export class DbEntityTable<TEntity extends DbEntity> {
 
     const queryBuilder = this.context.getTable(this.tableName).select(allColumnsSelector);
     return (queryBuilder as any).prepare(name);
+  }
+
+  /**
+   * Create a future query that will be executed later.
+   * Use with FutureQueryRunner.runAsync() for batch execution in a single roundtrip.
+   */
+  future(): FutureQuery<UnwrapDbColumns<TEntity>> {
+    const schema = this._getSchema();
+
+    const allColumnsSelector = (e: any) => {
+      const result: any = {};
+      for (const colName of Object.keys(schema.columns)) {
+        result[colName] = e[colName];
+      }
+      return result;
+    };
+
+    const queryBuilder = this.context.getTable(this.tableName).select(allColumnsSelector);
+    return (queryBuilder as any).future();
+  }
+
+  /**
+   * Create a future query that returns a single result or null.
+   * Use with FutureQueryRunner.runAsync() for batch execution.
+   */
+  futureFirstOrDefault(): FutureSingleQuery<UnwrapDbColumns<TEntity>> {
+    const schema = this._getSchema();
+
+    const allColumnsSelector = (e: any) => {
+      const result: any = {};
+      for (const colName of Object.keys(schema.columns)) {
+        result[colName] = e[colName];
+      }
+      return result;
+    };
+
+    const queryBuilder = this.context.getTable(this.tableName).select(allColumnsSelector);
+    return (queryBuilder as any).futureFirstOrDefault();
+  }
+
+  /**
+   * Create a future query that returns a count.
+   * Use with FutureQueryRunner.runAsync() for batch execution.
+   */
+  futureCount(): FutureCountQuery {
+    const schema = this._getSchema();
+
+    const allColumnsSelector = (e: any) => {
+      const result: any = {};
+      for (const colName of Object.keys(schema.columns)) {
+        result[colName] = e[colName];
+      }
+      return result;
+    };
+
+    const queryBuilder = this.context.getTable(this.tableName).select(allColumnsSelector);
+    return (queryBuilder as any).futureCount();
   }
 
   /**
