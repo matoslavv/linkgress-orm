@@ -41,6 +41,13 @@ export {
   CollectionQueryBuilder,
 } from './query/query-builder';
 
+// Union query builder
+export {
+  UnionQueryBuilder,
+  UnionType,
+  isUnionQueryBuilder,
+} from './query/union-builder';
+
 // Prepared statements
 export {
   PreparedQuery,

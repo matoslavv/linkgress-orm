@@ -1,0 +1,318 @@
+import { ConditionBuilder, SqlBuildContext, FieldRef, UnwrapSelection } from './conditions';
+import type { QueryExecutor, OrderDirection } from '../entity/db-context';
+import { parseOrderBy } from './query-utils';
+import type { DatabaseClient } from '../database/database-client.interface';
+import type { SelectQueryBuilder } from './query-builder';
+
+/**
+ * Union type: UNION removes duplicates, UNION ALL keeps all rows
+ */
+export type UnionType = 'UNION' | 'UNION ALL';
+
+/**
+ * Represents a query component in a union chain
+ */
+interface UnionComponent {
+  /** Function that builds the SQL for this query component */
+  buildSql: (context: SqlBuildContext) => string;
+  /** The union type to use before this query (not used for the first query) */
+  unionType?: UnionType;
+}
+
+/**
+ * Builder for UNION and UNION ALL queries.
+ * Combines multiple SELECT queries into a single result set.
+ *
+ * @example
+ * ```typescript
+ * // Basic UNION (removes duplicates)
+ * const result = await db.users
+ *   .select(u => ({ id: u.id, name: u.name }))
+ *   .union(
+ *     db.customers.select(c => ({ id: c.id, name: c.name }))
+ *   )
+ *   .toList();
+ *
+ * // UNION ALL (keeps duplicates)
+ * const allRows = await db.activeUsers
+ *   .select(u => ({ id: u.id }))
+ *   .unionAll(
+ *     db.inactiveUsers.select(u => ({ id: u.id }))
+ *   )
+ *   .toList();
+ *
+ * // Multiple unions with ordering
+ * const sorted = await db.users
+ *   .select(u => ({ id: u.id, name: u.name }))
+ *   .union(db.customers.select(c => ({ id: c.id, name: c.name })))
+ *   .unionAll(db.vendors.select(v => ({ id: v.id, name: v.name })))
+ *   .orderBy(r => r.name)
+ *   .limit(100)
+ *   .toList();
+ * ```
+ */
+export class UnionQueryBuilder<TSelection> {
+  private components: UnionComponent[] = [];
+  private orderByFields: Array<{ field: string; direction: 'ASC' | 'DESC' }> = [];
+  private limitValue?: number;
+  private offsetValue?: number;
+  private client: DatabaseClient;
+  private executor?: QueryExecutor;
+
+  /**
+   * Internal constructor - use SelectQueryBuilder.union() or unionAll() to create instances
+   */
+  constructor(
+    firstQuery: { buildUnionSql: (context: SqlBuildContext) => string },
+    client: DatabaseClient,
+    executor?: QueryExecutor
+  ) {
+    this.client = client;
+    this.executor = executor;
+    this.components.push({
+      buildSql: (ctx) => firstQuery.buildUnionSql(ctx),
+    });
+  }
+
+  /**
+   * Add a query with UNION (removes duplicate rows)
+   *
+   * @param query The query to union with the current result
+   * @returns A new UnionQueryBuilder with the added query
+   *
+   * @example
+   * ```typescript
+   * const users = await db.activeUsers
+   *   .select(u => ({ id: u.id, email: u.email }))
+   *   .union(db.pendingUsers.select(u => ({ id: u.id, email: u.email })))
+   *   .toList();
+   * ```
+   */
+  union(query: { buildUnionSql: (context: SqlBuildContext) => string }): UnionQueryBuilder<TSelection> {
+    const newBuilder = this.clone();
+    newBuilder.components.push({
+      buildSql: (ctx) => query.buildUnionSql(ctx),
+      unionType: 'UNION',
+    });
+    return newBuilder;
+  }
+
+  /**
+   * Add a query with UNION ALL (keeps all rows including duplicates)
+   *
+   * @param query The query to union with the current result
+   * @returns A new UnionQueryBuilder with the added query
+   *
+   * @example
+   * ```typescript
+   * // UNION ALL is faster than UNION as it doesn't need to remove duplicates
+   * const allLogs = await db.errorLogs
+   *   .select(l => ({ timestamp: l.createdAt, message: l.message }))
+   *   .unionAll(db.infoLogs.select(l => ({ timestamp: l.createdAt, message: l.message })))
+   *   .orderBy(r => r.timestamp)
+   *   .toList();
+   * ```
+   */
+  unionAll(query: { buildUnionSql: (context: SqlBuildContext) => string }): UnionQueryBuilder<TSelection> {
+    const newBuilder = this.clone();
+    newBuilder.components.push({
+      buildSql: (ctx) => query.buildUnionSql(ctx),
+      unionType: 'UNION ALL',
+    });
+    return newBuilder;
+  }
+
+  /**
+   * Order the combined result set
+   *
+   * @param selector Function that selects the field(s) to order by
+   * @returns This builder for chaining
+   *
+   * @example
+   * ```typescript
+   * // Single field
+   * .orderBy(r => r.name)
+   *
+   * // Multiple fields
+   * .orderBy(r => [r.lastName, r.firstName])
+   *
+   * // With direction
+   * .orderBy(r => [[r.createdAt, 'DESC'], [r.name, 'ASC']])
+   * ```
+   */
+  orderBy<T>(selector: (row: TSelection) => T): this;
+  orderBy<T>(selector: (row: TSelection) => T[]): this;
+  orderBy<T>(selector: (row: TSelection) => Array<[T, OrderDirection]>): this;
+  orderBy<T>(selector: (row: TSelection) => T | T[] | Array<[T, OrderDirection]>): this {
+    // Create a mock row with field refs for the selection
+    const mockRow = this.createMockRow();
+    const result = selector(mockRow as TSelection);
+
+    // Clear previous orderBy
+    this.orderByFields = [];
+    parseOrderBy(result, this.orderByFields);
+
+    return this;
+  }
+
+  /**
+   * Limit the number of results
+   *
+   * @param count Maximum number of rows to return
+   * @returns This builder for chaining
+   */
+  limit(count: number): this {
+    this.limitValue = count;
+    return this;
+  }
+
+  /**
+   * Skip a number of results
+   *
+   * @param count Number of rows to skip
+   * @returns This builder for chaining
+   */
+  offset(count: number): this {
+    this.offsetValue = count;
+    return this;
+  }
+
+  /**
+   * Execute the union query and return results
+   *
+   * @returns Promise resolving to array of results
+   */
+  async toList(): Promise<TSelection[]> {
+    const { sql, params } = this.buildSql();
+
+    const result = this.executor
+      ? await this.executor.query(sql, params)
+      : await this.client.query(sql, params);
+
+    return result.rows as TSelection[];
+  }
+
+  /**
+   * Get the first result or null if no results
+   *
+   * @returns Promise resolving to first result or null
+   */
+  async firstOrDefault(): Promise<TSelection | null> {
+    const originalLimit = this.limitValue;
+    this.limitValue = 1;
+
+    const results = await this.toList();
+
+    this.limitValue = originalLimit;
+    return results.length > 0 ? results[0] : null;
+  }
+
+  /**
+   * Count the total number of results
+   *
+   * @returns Promise resolving to the count
+   */
+  async count(): Promise<number> {
+    const { sql: innerSql, params } = this.buildSql();
+
+    const sql = `SELECT COUNT(*) as count FROM (${innerSql}) as union_count`;
+
+    const result = this.executor
+      ? await this.executor.query(sql, params)
+      : await this.client.query(sql, params);
+
+    return parseInt(result.rows[0]?.count || '0', 10);
+  }
+
+  /**
+   * Build the SQL for this union query
+   * @internal
+   */
+  buildSql(): { sql: string; params: any[] } {
+    const context: SqlBuildContext = {
+      paramCounter: 1,
+      params: [],
+    };
+
+    const sqlParts: string[] = [];
+
+    for (let i = 0; i < this.components.length; i++) {
+      const component = this.components[i];
+
+      if (i > 0 && component.unionType) {
+        sqlParts.push(component.unionType);
+      }
+
+      // Each component query should be wrapped in parentheses
+      const componentSql = component.buildSql(context);
+      sqlParts.push(`(${componentSql})`);
+    }
+
+    let sql = sqlParts.join('\n');
+
+    // Add ORDER BY (applies to the entire union result)
+    if (this.orderByFields.length > 0) {
+      const orderParts = this.orderByFields.map(({ field, direction }) => `"${field}" ${direction}`);
+      sql += `\nORDER BY ${orderParts.join(', ')}`;
+    }
+
+    // Add LIMIT
+    if (this.limitValue !== undefined) {
+      sql += `\nLIMIT ${this.limitValue}`;
+    }
+
+    // Add OFFSET
+    if (this.offsetValue !== undefined) {
+      sql += `\nOFFSET ${this.offsetValue}`;
+    }
+
+    return { sql, params: context.params };
+  }
+
+  /**
+   * Get the SQL string for debugging
+   *
+   * @returns The SQL that would be executed
+   */
+  toSql(): string {
+    return this.buildSql().sql;
+  }
+
+  /**
+   * Create a mock row for orderBy selector
+   */
+  private createMockRow(): any {
+    // Create a proxy that returns FieldRef objects for any property access
+    return new Proxy({}, {
+      get: (_target, prop: string | symbol) => {
+        if (typeof prop === 'symbol') return undefined;
+        return {
+          __fieldName: prop,
+          __dbColumnName: prop,
+        } as FieldRef;
+      },
+      has: () => true,
+    });
+  }
+
+  /**
+   * Clone this builder
+   */
+  private clone(): UnionQueryBuilder<TSelection> {
+    const cloned = Object.create(UnionQueryBuilder.prototype) as UnionQueryBuilder<TSelection>;
+    cloned.components = [...this.components];
+    cloned.orderByFields = [...this.orderByFields];
+    cloned.limitValue = this.limitValue;
+    cloned.offsetValue = this.offsetValue;
+    cloned.client = this.client;
+    cloned.executor = this.executor;
+    return cloned;
+  }
+}
+
+/**
+ * Check if a value is a UnionQueryBuilder
+ */
+export function isUnionQueryBuilder(value: any): value is UnionQueryBuilder<any> {
+  return value instanceof UnionQueryBuilder;
+}

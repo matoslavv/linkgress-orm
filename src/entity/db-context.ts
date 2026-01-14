@@ -12,6 +12,7 @@ import { DbSchemaManager } from '../migration/db-schema-manager';
 import { DbSequence, SequenceConfig } from '../schema/sequence-builder';
 import type { DbCte } from '../query/cte-builder';
 import type { Subquery } from '../query/subquery';
+import type { UnionQueryBuilder } from '../query/union-builder';
 import {
   getQualifiedTableName,
   buildReturningColumnList,
@@ -1848,6 +1849,48 @@ export interface EntitySelectQueryBuilder<TEntity extends DbEntity, TSelection> 
 
   // CTE support
   with(...ctes: import('../query/cte-builder').DbCte<any>[]): this;
+
+  // Union operations
+  /**
+   * Combine this query with another using UNION (removes duplicates)
+   *
+   * @param query Another query with compatible selection type
+   * @returns A UnionQueryBuilder for further chaining
+   *
+   * @example
+   * ```typescript
+   * const result = await db.users
+   *   .select(u => ({ id: u.id, name: u.username }))
+   *   .union(db.customers.select(c => ({ id: c.id, name: c.name })))
+   *   .orderBy(r => r.name)
+   *   .toList();
+   * ```
+   */
+  union(query: EntitySelectQueryBuilder<any, TSelection> | SelectQueryBuilder<TSelection>): UnionQueryBuilder<TSelection>;
+
+  /**
+   * Combine this query with another using UNION ALL (keeps all rows including duplicates)
+   *
+   * @param query Another query with compatible selection type
+   * @returns A UnionQueryBuilder for further chaining
+   *
+   * @example
+   * ```typescript
+   * // UNION ALL is faster than UNION as it doesn't need to remove duplicates
+   * const allLogs = await db.errorLogs
+   *   .select(l => ({ timestamp: l.createdAt, message: l.message }))
+   *   .unionAll(db.infoLogs.select(l => ({ timestamp: l.createdAt, message: l.message })))
+   *   .orderBy(r => r.timestamp)
+   *   .toList();
+   * ```
+   */
+  unionAll(query: EntitySelectQueryBuilder<any, TSelection> | SelectQueryBuilder<TSelection>): UnionQueryBuilder<TSelection>;
+
+  /**
+   * Build SQL for use in UNION queries (without ORDER BY, LIMIT, OFFSET)
+   * @internal Used by UnionQueryBuilder
+   */
+  buildUnionSql(context: import('../query/conditions').SqlBuildContext): string;
 
   // Mutation methods (available after where())
   update(data: Partial<InsertData<TEntity>>): FluentQueryUpdate<TSelection>;

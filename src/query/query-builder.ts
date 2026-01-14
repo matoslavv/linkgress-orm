@@ -10,6 +10,7 @@ import { GroupedQueryBuilder } from './grouped-query';
 import { DbCte, isCte } from './cte-builder';
 import { CollectionStrategyFactory } from './collection-strategy.factory';
 import type { CollectionAggregationConfig, SelectedField, NavigationJoin } from './collection-strategy.interface';
+import { UnionQueryBuilder } from './union-builder';
 
 /**
  * Field type categories for optimized result transformation
@@ -1581,6 +1582,73 @@ export class SelectQueryBuilder<TSelection> {
       : await this.client.query(sql, params);
 
     return result.rows[0]?.exists === true;
+  }
+
+  /**
+   * Combine this query with another using UNION (removes duplicates)
+   *
+   * @param query Another SelectQueryBuilder with compatible selection type
+   * @returns A UnionQueryBuilder for further chaining
+   *
+   * @example
+   * ```typescript
+   * const result = await db.users
+   *   .select(u => ({ id: u.id, name: u.name }))
+   *   .union(db.customers.select(c => ({ id: c.id, name: c.name })))
+   *   .orderBy(r => r.name)
+   *   .toList();
+   * ```
+   */
+  union(query: SelectQueryBuilder<TSelection>): UnionQueryBuilder<TSelection> {
+    const unionBuilder = new UnionQueryBuilder<TSelection>(this, this.client, this.executor);
+    return unionBuilder.union(query);
+  }
+
+  /**
+   * Combine this query with another using UNION ALL (keeps all rows including duplicates)
+   *
+   * @param query Another SelectQueryBuilder with compatible selection type
+   * @returns A UnionQueryBuilder for further chaining
+   *
+   * @example
+   * ```typescript
+   * // UNION ALL is faster than UNION as it doesn't need to remove duplicates
+   * const allLogs = await db.errorLogs
+   *   .select(l => ({ timestamp: l.createdAt, message: l.message }))
+   *   .unionAll(db.infoLogs.select(l => ({ timestamp: l.createdAt, message: l.message })))
+   *   .orderBy(r => r.timestamp)
+   *   .toList();
+   * ```
+   */
+  unionAll(query: SelectQueryBuilder<TSelection>): UnionQueryBuilder<TSelection> {
+    const unionBuilder = new UnionQueryBuilder<TSelection>(this, this.client, this.executor);
+    return unionBuilder.unionAll(query);
+  }
+
+  /**
+   * Build SQL for use in UNION queries (without ORDER BY, LIMIT, OFFSET)
+   * @internal Used by UnionQueryBuilder
+   */
+  buildUnionSql(context: SqlBuildContext): string {
+    const queryContext: QueryContext = {
+      ctes: new Map(),
+      cteCounter: 0,
+      paramCounter: context.paramCounter,
+      allParams: context.params,
+      collectionStrategy: this.collectionStrategy,
+      executor: this.executor,
+    };
+
+    const mockRow = this._createMockRow();
+    const selectionResult = this.selector(mockRow);
+
+    // Build query without ORDER BY, LIMIT, OFFSET for union component
+    const { sql } = this.buildQueryCore(selectionResult, queryContext, false);
+
+    // Update context's param counter
+    context.paramCounter = queryContext.paramCounter;
+
+    return sql;
   }
 
   /**
@@ -4332,6 +4400,243 @@ ${joinClauses.join('\n')}`;
     // Add DISTINCT if needed
     const distinctClause = this.isDistinct ? 'DISTINCT ' : '';
     finalQuery += `SELECT ${distinctClause}${selectParts.join(', ')}\n${fromClause}\n${whereClause}\n${orderByClause}\n${limitClause}`.trim();
+
+    return {
+      sql: finalQuery,
+      params: context.allParams,
+      nestedPaths,
+    };
+  }
+
+  /**
+   * Build the core SQL query, optionally excluding ORDER BY, LIMIT, and OFFSET
+   * Used by buildUnionSql to build component queries for UNION
+   * @internal
+   */
+  private buildQueryCore(selection: any, context: QueryContext, includeOrderLimitOffset: boolean = true): { sql: string; params: any[]; nestedPaths: Set<string> } {
+    // Handle user-defined CTEs first - their params need to come before main query params
+    for (const cte of this.ctes) {
+      context.allParams.push(...cte.params);
+      context.paramCounter += cte.params.length;
+    }
+
+    const selectParts: string[] = [];
+    const collectionFields: Array<{ name: string; cteName: string; isCTE: boolean; joinClause?: string; selectExpression?: string }> = [];
+    const joins: Array<{ alias: string; targetTable: string; targetSchema?: string; foreignKeys: string[]; matches: string[]; isMandatory: boolean; sourceAlias?: string }> = [];
+    const nestedPaths: Set<string> = new Set();
+
+    // Scan selection for navigation property references and add JOINs
+    this.detectAndAddJoinsFromSelection(selection, joins);
+
+    // Scan WHERE condition for navigation property references and add JOINs
+    this.detectAndAddJoinsFromCondition(this.whereCond, joins);
+
+    // Handle case where selection is a single value (not an object with properties)
+    if (selection instanceof SqlFragment) {
+      const sqlBuildContext = {
+        paramCounter: context.paramCounter,
+        params: context.allParams,
+      };
+      const fragmentSql = selection.buildSql(sqlBuildContext);
+      context.paramCounter = sqlBuildContext.paramCounter;
+      selectParts.push(fragmentSql);
+    } else if (typeof selection === 'object' && selection !== null && '__dbColumnName' in selection) {
+      const tableAlias = ('__tableAlias' in selection && selection.__tableAlias) ? selection.__tableAlias as string : this.schema.name;
+      selectParts.push(`"${tableAlias}"."${selection.__dbColumnName}"`);
+    } else if (selection instanceof CollectionQueryBuilder) {
+      throw new Error('Cannot use CollectionQueryBuilder directly as selection');
+    } else {
+      // Process selection object properties
+      for (const [key, value] of Object.entries(selection)) {
+        if (value instanceof CollectionQueryBuilder || (value && typeof value === 'object' && '__collectionResult' in value)) {
+          // Collection fields are not supported in UNION queries for simplicity
+          // Skip them - they would need complex handling
+          continue;
+        } else if (value instanceof Subquery || (value && typeof value === 'object' && 'buildSql' in value && typeof (value as any).buildSql === 'function' && '__mode' in value)) {
+          const sqlBuildContext = {
+            paramCounter: context.paramCounter,
+            params: context.allParams,
+          };
+          const subquerySql = (value as Subquery).buildSql(sqlBuildContext);
+          context.paramCounter = sqlBuildContext.paramCounter;
+          selectParts.push(`(${subquerySql}) as "${key}"`);
+        } else if (value instanceof SqlFragment) {
+          const sqlBuildContext = {
+            paramCounter: context.paramCounter,
+            params: context.allParams,
+          };
+          const fragmentSql = value.buildSql(sqlBuildContext);
+          context.paramCounter = sqlBuildContext.paramCounter;
+          selectParts.push(`${fragmentSql} as "${key}"`);
+        } else if (typeof value === 'object' && value !== null && '__dbColumnName' in value) {
+          if ('__tableAlias' in value && value.__tableAlias && typeof value.__tableAlias === 'string') {
+            const tableAlias = value.__tableAlias as string;
+            const columnName = value.__dbColumnName as string;
+
+            const relConfig = this.schema.relations[tableAlias];
+            if (relConfig && !joins.find(j => j.alias === tableAlias)) {
+              let targetSchema: string | undefined;
+              if (relConfig.targetTableBuilder) {
+                const targetTableSchema = relConfig.targetTableBuilder.build();
+                targetSchema = targetTableSchema.schema;
+              }
+              joins.push({
+                alias: tableAlias,
+                targetTable: relConfig.targetTable,
+                targetSchema,
+                foreignKeys: relConfig.foreignKeys || [relConfig.foreignKey || ''],
+                matches: relConfig.matches || [],
+                isMandatory: relConfig.isMandatory ?? false,
+              });
+            }
+
+            const cteJoin = this.manualJoins.find(j => j.cte && j.cte.name === tableAlias);
+            if (cteJoin && cteJoin.cte && cteJoin.cte.isAggregationColumn(columnName)) {
+              selectParts.push(`COALESCE("${tableAlias}"."${columnName}", '[]'::json) as "${key}"`);
+            } else {
+              selectParts.push(`"${tableAlias}"."${columnName}" as "${key}"`);
+            }
+          } else {
+            selectParts.push(`"${this.schema.name}"."${value.__dbColumnName}" as "${key}"`);
+          }
+        } else if (typeof value === 'string') {
+          selectParts.push(`"${this.schema.name}"."${value}" as "${key}"`);
+        } else if (typeof value === 'object' && value !== null) {
+          if (!('__dbColumnName' in value)) {
+            if (Array.isArray(value)) {
+              continue;
+            }
+            if (value instanceof CollectionQueryBuilder) {
+              continue;
+            } else if (value instanceof ReferenceQueryBuilder) {
+              continue; // Skip ReferenceQueryBuilder in union queries
+            }
+          }
+          selectParts.push(`$${context.paramCounter++} as "${key}"`);
+          context.allParams.push(value);
+        } else if (value === undefined) {
+          continue;
+        } else {
+          selectParts.push(`$${context.paramCounter++} as "${key}"`);
+          context.allParams.push(value);
+        }
+      }
+    }
+
+    // Build WHERE clause
+    let whereClause = '';
+    if (this.whereCond) {
+      const condBuilder = new ConditionBuilder();
+      const { sql, params, placeholders, paramCounter: newParamCounter } = condBuilder.build(this.whereCond, context.paramCounter, context.placeholders);
+      whereClause = `WHERE ${sql}`;
+      context.paramCounter = newParamCounter;
+      context.allParams.push(...params);
+      if (placeholders) {
+        context.placeholders = placeholders;
+      }
+    }
+
+    // Build ORDER BY clause (only if includeOrderLimitOffset is true)
+    let orderByClause = '';
+    if (includeOrderLimitOffset && this.orderByFields.length > 0) {
+      const colNameMap = getColumnNameMapForSchema(this.schema);
+      const orderParts = this.orderByFields.map(
+        ({ field, direction }) => {
+          if (selection && typeof selection === 'object' && !Array.isArray(selection) && field in selection) {
+            return `"${field}" ${direction}`;
+          } else {
+            const dbColumnName = colNameMap.get(field) ?? field;
+            return `"${this.schema.name}"."${dbColumnName}" ${direction}`;
+          }
+        }
+      );
+      orderByClause = `ORDER BY ${orderParts.join(', ')}`;
+    }
+
+    // Build LIMIT/OFFSET (only if includeOrderLimitOffset is true)
+    let limitClause = '';
+    if (includeOrderLimitOffset) {
+      if (this.limitValue !== undefined) {
+        limitClause = `LIMIT ${this.limitValue}`;
+      }
+      if (this.offsetValue !== undefined) {
+        limitClause += ` OFFSET ${this.offsetValue}`;
+      }
+    }
+
+    // Build final query with CTEs
+    let finalQuery = '';
+
+    const allCtes: string[] = [];
+
+    for (const cte of this.ctes) {
+      allCtes.push(`"${cte.name}" AS (${cte.query})`);
+    }
+
+    if (context.ctes.size > 0) {
+      for (const [cteName, { sql }] of context.ctes.entries()) {
+        allCtes.push(`"${cteName}" AS (${sql})`);
+      }
+    }
+
+    if (allCtes.length > 0) {
+      finalQuery = `WITH ${allCtes.join(', ')}\n`;
+    }
+
+    // Build main query
+    const qualifiedTableName = this.getQualifiedTableName(this.schema.name, this.schema.schema);
+    let fromClause = `FROM ${qualifiedTableName}`;
+
+    // Add manual JOINs
+    for (const manualJoin of this.manualJoins) {
+      const joinTypeStr = manualJoin.type === 'INNER' ? 'INNER JOIN' : 'LEFT JOIN';
+      const condBuilder = new ConditionBuilder();
+      const { sql: condSql, params: condParams, placeholders: joinPlaceholders, paramCounter: newParamCounter } = condBuilder.build(manualJoin.condition, context.paramCounter, context.placeholders);
+      context.paramCounter = newParamCounter;
+      context.allParams.push(...condParams);
+      if (joinPlaceholders) {
+        context.placeholders = joinPlaceholders;
+      }
+
+      if (manualJoin.cte) {
+        fromClause += `\n${joinTypeStr} "${manualJoin.cte.name}" ON ${condSql}`;
+      } else if ((manualJoin as any).isSubquery && (manualJoin as any).subquery) {
+        const subqueryBuildContext = {
+          paramCounter: context.paramCounter,
+          params: context.allParams,
+        };
+        const subquerySql = (manualJoin as any).subquery.buildSql(subqueryBuildContext);
+        context.paramCounter = subqueryBuildContext.paramCounter;
+        fromClause += `\n${joinTypeStr} (${subquerySql}) AS "${manualJoin.alias}" ON ${condSql}`;
+      } else {
+        fromClause += `\n${joinTypeStr} "${manualJoin.table}" AS "${manualJoin.alias}" ON ${condSql}`;
+      }
+    }
+
+    // Add JOINs for single navigation
+    for (const join of joins) {
+      const joinType = join.isMandatory ? 'INNER JOIN' : 'LEFT JOIN';
+      const sourceTable = join.sourceAlias || this.schema.name;
+      const onConditions: string[] = [];
+      for (let i = 0; i < join.foreignKeys.length; i++) {
+        const fk = join.foreignKeys[i];
+        const match = join.matches[i];
+        onConditions.push(`"${sourceTable}"."${fk}" = "${join.alias}"."${match}"`);
+      }
+      const joinTableName = this.getQualifiedTableName(join.targetTable, join.targetSchema);
+      fromClause += `\n${joinType} ${joinTableName} AS "${join.alias}" ON ${onConditions.join(' AND ')}`;
+    }
+
+    // Add DISTINCT if needed
+    const distinctClause = this.isDistinct ? 'DISTINCT ' : '';
+
+    // Build final SQL
+    const queryParts = [`SELECT ${distinctClause}${selectParts.join(', ')}`, fromClause];
+    if (whereClause) queryParts.push(whereClause);
+    if (orderByClause) queryParts.push(orderByClause);
+    if (limitClause) queryParts.push(limitClause);
+
+    finalQuery += queryParts.join('\n').trim();
 
     return {
       sql: finalQuery,
