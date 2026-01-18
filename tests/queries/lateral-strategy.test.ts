@@ -995,4 +995,75 @@ describe('LATERAL Strategy SQL Generation', () => {
       }
     }, { collectionStrategy: 'lateral' });
   });
+
+  describe('Nested collections', () => {
+    test('should handle nested collection with toNumberList inside toList', async () => {
+      // This tests the bug where nested collections with correlated subqueries (toNumberList)
+      // inside a LATERAL join (toList) would generate invalid SQL with non-existent relations
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // Query: users -> orders -> orderTasks (as number list of task IDs)
+        const results = await db.users
+          .select(u => ({
+            username: u.username,
+            orders: u.orders!.select(o => ({
+              orderId: o.id,
+              status: o.status,
+              taskIds: o.orderTasks!.select(ot => ({
+                id: ot.taskId,
+              })).toNumberList('taskIds'),
+            })).toList('orders'),
+          }))
+          .toList();
+
+        expect(results.length).toBe(3);
+
+        // Alice has 1 order with 1 task
+        const alice = results.find(u => u.username === 'alice');
+        expect(alice).toBeDefined();
+        expect(alice!.orders.length).toBe(1);
+        expect(alice!.orders[0].taskIds).toBeInstanceOf(Array);
+        expect(alice!.orders[0].taskIds.length).toBe(1);
+
+        // Bob has 1 order with 1 task
+        const bob = results.find(u => u.username === 'bob');
+        expect(bob).toBeDefined();
+        expect(bob!.orders.length).toBe(1);
+        expect(bob!.orders[0].taskIds.length).toBe(1);
+
+        // Charlie has no orders
+        const charlie = results.find(u => u.username === 'charlie');
+        expect(charlie).toBeDefined();
+        expect(charlie!.orders.length).toBe(0);
+      }, { collectionStrategy: 'lateral' });
+    });
+
+    // TODO: count() inside nested collection has a separate bug with result transformation
+    // The SQL is correct but the result mapping returns {} instead of the number
+    test.skip('should handle nested collection with count inside toList', async () => {
+      await withDatabase(async (db) => {
+        await seedTestData(db);
+
+        // Query: users -> orders -> count of orderTasks
+        const results = await db.users
+          .select(u => ({
+            username: u.username,
+            orders: u.orders!.select(o => ({
+              orderId: o.id,
+              taskCount: o.orderTasks!.count(),
+            })).toList('orders'),
+          }))
+          .toList();
+
+        expect(results.length).toBe(3);
+
+        const alice = results.find(u => u.username === 'alice');
+        expect(alice!.orders[0].taskCount).toBe(1);
+
+        const bob = results.find(u => u.username === 'bob');
+        expect(bob!.orders[0].taskCount).toBe(1);
+      }, { collectionStrategy: 'lateral' });
+    });
+  });
 });

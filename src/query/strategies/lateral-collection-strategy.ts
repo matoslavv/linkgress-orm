@@ -174,8 +174,12 @@ export class LateralCollectionStrategy implements ICollectionStrategy {
     // Build navigation JOINs for multi-level navigation (selector joins only)
     const navJoinsSQL = this.buildNavigationJoinsWithAlias(selectorNavigationJoins, innerTableAlias, targetTable, context);
 
+    // Check if the source table has been aliased by a parent LATERAL (for nested collections)
+    // If so, use that alias instead of the raw table name
+    const sourceTableAlias = context.lateralTableAliasMap?.get(sourceTable) || sourceTable;
+
     // Build WHERE clause with correlation to parent
-    let whereSQL = `"${innerTableAlias}"."${foreignKey}" = "${sourceTable}"."id"`;
+    let whereSQL = `"${innerTableAlias}"."${foreignKey}" = "${sourceTableAlias}"."id"`;
     if (whereClause) {
       const rewrittenWhereClause = rewriteTableReference(whereClause);
       whereSQL += ` AND ${rewrittenWhereClause}`;

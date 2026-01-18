@@ -6632,19 +6632,18 @@ export class CollectionQueryBuilder<TItem = any> {
 
         // For CTE/LATERAL strategy, we need to track the nested join
         // The nested aggregation needs to be joined in the outer collection's subquery
-        if (nestedResult.tableName) {
+        // However, correlated subqueries (used for toNumberList, etc.) don't need joins -
+        // they are embedded directly in the SELECT expression
+        if (nestedResult.tableName && (nestedResult.isCTE || nestedResult.joinClause)) {
           let nestedJoinClause: string;
 
           if (nestedResult.isCTE) {
             // CTE strategy: join by parent_id
             // The join should be: this.targetTable.id = nestedCte.parent_id
             nestedJoinClause = `LEFT JOIN "${nestedResult.tableName}" ON "${this.targetTable}"."id" = "${nestedResult.tableName}".parent_id`;
-          } else if (nestedResult.joinClause) {
-            // LATERAL strategy: use the provided join clause (contains full LATERAL subquery)
-            nestedJoinClause = nestedResult.joinClause;
           } else {
-            // Fallback for other strategies
-            nestedJoinClause = `LEFT JOIN "${nestedResult.tableName}" ON "${this.targetTable}"."id" = "${nestedResult.tableName}".parent_id`;
+            // LATERAL strategy: use the provided join clause (contains full LATERAL subquery)
+            nestedJoinClause = nestedResult.joinClause!;
           }
 
           return {
