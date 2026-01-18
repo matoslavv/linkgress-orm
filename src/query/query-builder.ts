@@ -6663,6 +6663,19 @@ export class CollectionQueryBuilder<TItem = any> {
         }
 
         // The nested collection becomes a correlated subquery in SELECT
+        // For scalar aggregations (count, min, max, sum), don't include nestedCollectionInfo
+        // because the result is a scalar value, not a structured object that needs transformation
+        const aggregationType = field.getAggregationType();
+        const isScalarAggregation = aggregationType && ['COUNT', 'MIN', 'MAX', 'SUM'].includes(aggregationType);
+
+        if (isScalarAggregation) {
+          // Scalar aggregation - just return the expression, no nested transformation needed
+          return {
+            alias,
+            expression: nestedResult.selectExpression || nestedResult.sql,
+          };
+        }
+
         return {
           alias,
           expression: nestedResult.selectExpression || nestedResult.sql,

@@ -1039,9 +1039,7 @@ describe('LATERAL Strategy SQL Generation', () => {
       }, { collectionStrategy: 'lateral' });
     });
 
-    // TODO: count() inside nested collection has a separate bug with result transformation
-    // The SQL is correct but the result mapping returns {} instead of the number
-    test.skip('should handle nested collection with count inside toList', async () => {
+    test('should handle nested collection with count inside toList', async () => {
       await withDatabase(async (db) => {
         await seedTestData(db);
 
