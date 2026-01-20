@@ -1,6 +1,33 @@
 import { describe, test, expect } from '@jest/globals';
-import { withDatabase, createTestDatabase } from '../utils/test-database';
-import { eq, inArray } from '../../src';
+import { withDatabase, createTestDatabase, createFreshClient } from '../utils/test-database';
+import { eq, inArray, DbContext, DbEntityTable, DbEntity, DbColumn, DbModelConfig, integer, varchar, pgEnum, enumColumn } from '../../src';
+
+// Isolated test enums with unique names for Schema Deletion test
+const testEnumTaskStatus = pgEnum('test_enum_task_status', ['pending', 'done'] as const);
+const testEnumTaskPriority = pgEnum('test_enum_task_priority', ['low', 'high'] as const);
+
+class EnumTestTask extends DbEntity {
+  id!: DbColumn<number>;
+  title!: DbColumn<string>;
+  status!: DbColumn<'pending' | 'done'>;
+  priority!: DbColumn<'low' | 'high'>;
+}
+
+class EnumTestDatabase extends DbContext {
+  get tasks(): DbEntityTable<EnumTestTask> {
+    return this.table(EnumTestTask);
+  }
+
+  protected override setupModel(model: DbModelConfig): void {
+    model.entity(EnumTestTask, entity => {
+      entity.toTable('enum_test_tasks');
+      entity.property(e => e.id).hasType(integer('id').primaryKey().generatedAlwaysAsIdentity({ name: 'enum_test_tasks_id_seq' }));
+      entity.property(e => e.title).hasType(varchar('title', 200)).isRequired();
+      entity.property(e => e.status).hasType(enumColumn('status', testEnumTaskStatus)).isRequired();
+      entity.property(e => e.priority).hasType(enumColumn('priority', testEnumTaskPriority)).isRequired();
+    });
+  }
+}
 
 describe('PostgreSQL ENUM Support', () => {
   describe('Schema Creation', () => {
@@ -161,18 +188,22 @@ describe('PostgreSQL ENUM Support', () => {
 
   describe('Schema Deletion', () => {
     test('should drop enum types when schema is deleted', async () => {
-      const db = createTestDatabase();
-      const client = (db as any).client;
+      const client = createFreshClient();
+      const db = new EnumTestDatabase(client);
 
       try {
-        await db.getSchemaManager().ensureDeleted();
+        // Clean up any previous test runs
+        await client.query(`DROP TABLE IF EXISTS enum_test_tasks CASCADE`);
+        await client.query(`DROP TYPE IF EXISTS test_enum_task_status, test_enum_task_priority CASCADE`);
+
+        // Create schema with enums
         await db.getSchemaManager().ensureCreated();
 
         // Verify enums exist
         let result = await client.query(`
           SELECT typname
           FROM pg_type
-          WHERE typname IN ('task_status', 'task_priority')
+          WHERE typname IN ('test_enum_task_status', 'test_enum_task_priority')
         `);
         expect(result.rows).toHaveLength(2);
 
@@ -183,7 +214,7 @@ describe('PostgreSQL ENUM Support', () => {
         result = await client.query(`
           SELECT typname
           FROM pg_type
-          WHERE typname IN ('task_status', 'task_priority')
+          WHERE typname IN ('test_enum_task_status', 'test_enum_task_priority')
         `);
 
         expect(result.rows).toHaveLength(0);

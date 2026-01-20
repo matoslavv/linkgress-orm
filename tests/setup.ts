@@ -1,6 +1,5 @@
 import 'dotenv/config';
-import { AppDatabase } from '../debug/schema/appDatabase';
-import { PgClient } from '../src';
+import { disposeSharedDatabase } from './utils/test-database';
 
 /**
  * Global test setup - runs before all tests
@@ -14,11 +13,10 @@ beforeAll(async () => {
 });
 
 /**
- * Cleanup after all tests
+ * Cleanup after all tests - close the shared database connection
  */
 afterAll(async () => {
-  // Give time for connections to close
-  await new Promise(resolve => setTimeout(resolve, 100));
+  await disposeSharedDatabase();
 });
 
 /**

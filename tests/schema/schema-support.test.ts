@@ -1,5 +1,5 @@
 import { describe, test, expect } from '@jest/globals';
-import { createTestDatabase } from '../utils/test-database';
+import { createFreshClient } from '../utils/test-database';
 import { DbContext, DbEntityTable, DbModelConfig, DbEntity, DbColumn, integer, varchar, text, boolean, timestamp } from '../../src';
 
 // Test entities for schema support
@@ -31,7 +31,7 @@ class SchemaTestDatabase extends DbContext {
   protected override setupModel(model: DbModelConfig): void {
     model.entity(SchemaUser, entity => {
       entity.toTable('schema_users');
-      entity.toSchema('auth');
+      entity.toSchema('test_auth');
 
       entity.property(e => e.id).hasType(integer('id').primaryKey().generatedAlwaysAsIdentity({ name: 'schema_users_id_seq' }));
       entity.property(e => e.username).hasType(varchar('username', 100)).isRequired();
@@ -44,10 +44,10 @@ class SchemaTestDatabase extends DbContext {
     });
 
     model.entity(SchemaPost, entity => {
-      entity.toTable('schema_posts');
+      entity.toTable('test_schema_posts');
       // Posts in public schema (default)
 
-      entity.property(e => e.id).hasType(integer('id').primaryKey().generatedAlwaysAsIdentity({ name: 'schema_posts_id_seq' }));
+      entity.property(e => e.id).hasType(integer('id').primaryKey().generatedAlwaysAsIdentity({ name: 'test_schema_posts_id_seq' }));
       entity.property(e => e.title).hasType(varchar('title', 200)).isRequired();
       entity.property(e => e.userId).hasType(integer('user_id')).isRequired();
 
@@ -60,48 +60,59 @@ class SchemaTestDatabase extends DbContext {
   }
 }
 
+/**
+ * Clean up only the test-specific tables and schema
+ * We DON'T use ensureDeleted() because it drops all enum types from the global registry,
+ * which would break other tests using AppDatabase
+ */
+async function cleanupTestSchema(client: any) {
+  await client.query(`DROP TABLE IF EXISTS test_schema_posts CASCADE`);
+  await client.query(`DROP TABLE IF EXISTS test_auth.schema_users CASCADE`);
+  await client.query(`DROP SCHEMA IF EXISTS test_auth CASCADE`);
+}
+
 describe('PostgreSQL Schema Support', () => {
   test('should create schemas before creating tables', async () => {
-    const client = (createTestDatabase() as any).client;
+    const client = createFreshClient();
     const db = new SchemaTestDatabase(client);
 
     try {
-      await db.getSchemaManager().ensureDeleted();
+      await cleanupTestSchema(client);
       await db.getSchemaManager().ensureCreated();
 
       // Verify auth schema was created
       const schemaResult = await client.query(`
         SELECT schema_name
         FROM information_schema.schemata
-        WHERE schema_name = 'auth'
+        WHERE schema_name = 'test_auth'
       `);
 
       expect(schemaResult.rows).toHaveLength(1);
-      expect(schemaResult.rows[0].schema_name).toBe('auth');
+      expect(schemaResult.rows[0].schema_name).toBe('test_auth');
 
       // Verify schema_users table is in auth schema
       const tableResult = await client.query(`
         SELECT table_schema, table_name
         FROM information_schema.tables
         WHERE table_name = 'schema_users'
-        AND table_schema = 'auth'
+        AND table_schema = 'test_auth'
       `);
 
       expect(tableResult.rows).toHaveLength(1);
-      expect(tableResult.rows[0].table_schema).toBe('auth');
+      expect(tableResult.rows[0].table_schema).toBe('test_auth');
       expect(tableResult.rows[0].table_name).toBe('schema_users');
     } finally {
-      await db.getSchemaManager().ensureDeleted();
+      await cleanupTestSchema(client);
       await db.dispose();
     }
   });
 
   test('should query tables with schema prefix', async () => {
-    const client = (createTestDatabase() as any).client;
+    const client = createFreshClient();
     const db = new SchemaTestDatabase(client);
 
     try {
-      await db.getSchemaManager().ensureDeleted();
+      await cleanupTestSchema(client);
       await db.getSchemaManager().ensureCreated();
 
       // Insert a user into auth.schema_users
@@ -119,17 +130,17 @@ describe('PostgreSQL Schema Support', () => {
       expect(users).toHaveLength(1);
       expect(users[0].username).toBe('testuser');
     } finally {
-      await db.getSchemaManager().ensureDeleted();
+      await cleanupTestSchema(client);
       await db.dispose();
     }
   });
 
   test('should handle foreign keys across schemas', async () => {
-    const client = (createTestDatabase() as any).client;
+    const client = createFreshClient();
     const db = new SchemaTestDatabase(client);
 
     try {
-      await db.getSchemaManager().ensureDeleted();
+      await cleanupTestSchema(client);
       await db.getSchemaManager().ensureCreated();
 
       // Create user in auth schema
@@ -159,35 +170,35 @@ describe('PostgreSQL Schema Support', () => {
       expect(posts).toHaveLength(1);
       expect(posts[0].user?.username).toBe('author');
     } finally {
-      await db.getSchemaManager().ensureDeleted();
+      await cleanupTestSchema(client);
       await db.dispose();
     }
   });
 
   test('should drop schemas when calling ensureDeleted', async () => {
-    const client = (createTestDatabase() as any).client;
+    const client = createFreshClient();
     const db = new SchemaTestDatabase(client);
 
     try {
-      await db.getSchemaManager().ensureDeleted();
+      await cleanupTestSchema(client);
       await db.getSchemaManager().ensureCreated();
 
       // Verify schema exists
       let schemaResult = await client.query(`
         SELECT schema_name
         FROM information_schema.schemata
-        WHERE schema_name = 'auth'
+        WHERE schema_name = 'test_auth'
       `);
       expect(schemaResult.rows).toHaveLength(1);
 
-      // Drop schema
-      await db.getSchemaManager().ensureDeleted();
+      // Drop schema using targeted cleanup
+      await cleanupTestSchema(client);
 
       // Verify schema is dropped
       schemaResult = await client.query(`
         SELECT schema_name
         FROM information_schema.schemata
-        WHERE schema_name = 'auth'
+        WHERE schema_name = 'test_auth'
       `);
       expect(schemaResult.rows).toHaveLength(0);
     } finally {

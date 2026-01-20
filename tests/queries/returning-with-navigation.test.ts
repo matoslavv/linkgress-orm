@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from '@jest/globals';
-import { createTestDatabase, setupDatabase, cleanupDatabase, seedTestData } from '../utils/test-database';
+import { getSharedDatabase, setupDatabase, cleanupDatabase, seedTestData } from '../utils/test-database';
 import { eq, and, gt } from '../../src';
 import { AppDatabase } from '../../debug/schema/appDatabase';
 
@@ -7,7 +7,7 @@ describe('Navigation properties in RETURNING statements', () => {
   let db: AppDatabase;
 
   beforeAll(async () => {
-    db = createTestDatabase({ logQueries: false });
+    db = getSharedDatabase({ logQueries: false });
     await setupDatabase(db);
   });
 

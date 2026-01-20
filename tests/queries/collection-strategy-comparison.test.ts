@@ -558,6 +558,10 @@ describe('Collection Strategy Comparison', () => {
         u.orders.sort((a, b) => a.totalAmount - b.totalAmount);
       });
 
+      // Sort main results by userId for consistent comparison
+      cteResults.sort((a, b) => a.userId - b.userId);
+      tempTableResults.sort((a, b) => a.userId - b.userId);
+
       // Verify results are identical
       expect(cteResults).toEqual(tempTableResults);
     });

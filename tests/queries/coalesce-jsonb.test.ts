@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from '@jest/globals';
-import { createTestDatabase, setupDatabase, cleanupDatabase, seedTestData } from '../utils/test-database';
+import { getSharedDatabase, setupDatabase, cleanupDatabase, seedTestData } from '../utils/test-database';
 import { AppDatabase } from '../../debug/schema/appDatabase';
 import { coalesce, jsonbSelect, jsonbSelectText, eq, gt, sql } from '../../src';
 
@@ -7,7 +7,7 @@ describe('Coalesce and JSONB Operators', () => {
   let db: AppDatabase;
 
   beforeAll(async () => {
-    db = createTestDatabase();
+    db = getSharedDatabase();
     await setupDatabase(db);
     await seedTestData(db);
   });

@@ -86,13 +86,15 @@ describe('Sequence Support', () => {
 
     db = new SequenceTestDatabase(client);
 
-    // Create schema
-    await db.getSchemaManager().ensureDeleted();
+    // Drop test objects only
+    await client.query(`DROP TABLE IF EXISTS sequence_test_entities CASCADE`);
+    await client.query(`DROP SEQUENCE IF EXISTS basic_seq, custom_seq, cached_seq, schema_seq CASCADE`);
     await db.getSchemaManager().ensureCreated();
   });
 
   afterAll(async () => {
-    await db.getSchemaManager().ensureDeleted();
+    await client.query(`DROP TABLE IF EXISTS sequence_test_entities CASCADE`);
+    await client.query(`DROP SEQUENCE IF EXISTS basic_seq, custom_seq, cached_seq, schema_seq CASCADE`);
     await db.dispose();
   });
 
@@ -250,7 +252,7 @@ describe('Sequence Support', () => {
     expect(inserted).toHaveLength(5);
   });
 
-  test('should drop sequences when calling ensureDeleted', async () => {
+  test('should drop sequences when calling DROP SEQUENCE', async () => {
     // Sequences should exist before deletion
     let result = await client.query(`
       SELECT COUNT(*) as count
@@ -260,8 +262,8 @@ describe('Sequence Support', () => {
 
     expect(Number(result.rows[0].count)).toBeGreaterThan(0);
 
-    // Drop schema
-    await db.getSchemaManager().ensureDeleted();
+    // Drop sequences only (not the whole schema)
+    await client.query(`DROP SEQUENCE IF EXISTS basic_seq, custom_seq, cached_seq, schema_seq CASCADE`);
 
     // Verify sequences are dropped
     result = await client.query(`
@@ -277,8 +279,9 @@ describe('Sequence Support', () => {
   });
 
   test('should create sequences during migrate()', async () => {
-    // First, drop all sequences and tables
-    await db.getSchemaManager().ensureDeleted();
+    // First, drop sequences and table
+    await client.query(`DROP TABLE IF EXISTS sequence_test_entities CASCADE`);
+    await client.query(`DROP SEQUENCE IF EXISTS basic_seq, custom_seq, cached_seq, schema_seq CASCADE`);
 
     // Verify sequences don't exist
     let result = await client.query(`

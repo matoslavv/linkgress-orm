@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from '@jest/globals';
-import { createTestDatabase } from '../utils/test-database';
+import { createFreshClient } from '../utils/test-database';
 import { DbContext, DbEntityTable, DbModelConfig, DbEntity, DbColumn, integer, varchar } from '../../src';
 import { EntityMetadataStore } from '../../src/entity/entity-base';
 
@@ -50,11 +50,11 @@ describe('Unique Index Support', () => {
   });
 
   test('should create unique index on table', async () => {
-    const client = (createTestDatabase() as any).client;
+    const client = createFreshClient();
     const db = new UniqueIndexTestDatabase(client);
 
     try {
-      await db.getSchemaManager().ensureDeleted();
+      await client.query(`DROP TABLE IF EXISTS products_unique_test CASCADE`);
       await db.getSchemaManager().ensureCreated();
 
       // Query pg_indexes to verify the unique index was created
@@ -73,17 +73,17 @@ describe('Unique Index Support', () => {
       expect(indexResult.rows[0].indexdef).toContain('product_subtype');
       expect(indexResult.rows[0].indexdef).toContain('entity_id');
     } finally {
-      await db.getSchemaManager().ensureDeleted();
+      await client.query(`DROP TABLE IF EXISTS products_unique_test CASCADE`);
       await db.dispose();
     }
   });
 
   test('should create regular (non-unique) index on table', async () => {
-    const client = (createTestDatabase() as any).client;
+    const client = createFreshClient();
     const db = new UniqueIndexTestDatabase(client);
 
     try {
-      await db.getSchemaManager().ensureDeleted();
+      await client.query(`DROP TABLE IF EXISTS products_unique_test CASCADE`);
       await db.getSchemaManager().ensureCreated();
 
       // Query pg_indexes to verify the regular index was created
@@ -100,17 +100,17 @@ describe('Unique Index Support', () => {
       expect(indexResult.rows[0].indexdef).not.toContain('UNIQUE');
       expect(indexResult.rows[0].indexdef).toContain('name');
     } finally {
-      await db.getSchemaManager().ensureDeleted();
+      await client.query(`DROP TABLE IF EXISTS products_unique_test CASCADE`);
       await db.dispose();
     }
   });
 
   test('should enforce unique constraint and reject duplicate values', async () => {
-    const client = (createTestDatabase() as any).client;
+    const client = createFreshClient();
     const db = new UniqueIndexTestDatabase(client);
 
     try {
-      await db.getSchemaManager().ensureDeleted();
+      await client.query(`DROP TABLE IF EXISTS products_unique_test CASCADE`);
       await db.getSchemaManager().ensureCreated();
 
       // Insert first record
@@ -143,17 +143,17 @@ describe('Unique Index Support', () => {
       const count = await db.products.count();
       expect(count).toBe(2);
     } finally {
-      await db.getSchemaManager().ensureDeleted();
+      await client.query(`DROP TABLE IF EXISTS products_unique_test CASCADE`);
       await db.dispose();
     }
   });
 
   test('should allow duplicate values in non-unique index', async () => {
-    const client = (createTestDatabase() as any).client;
+    const client = createFreshClient();
     const db = new UniqueIndexTestDatabase(client);
 
     try {
-      await db.getSchemaManager().ensureDeleted();
+      await client.query(`DROP TABLE IF EXISTS products_unique_test CASCADE`);
       await db.getSchemaManager().ensureCreated();
 
       // Insert multiple records with the same name (covered by non-unique index)
@@ -175,7 +175,7 @@ describe('Unique Index Support', () => {
       const count = await db.products.count();
       expect(count).toBe(2);
     } finally {
-      await db.getSchemaManager().ensureDeleted();
+      await client.query(`DROP TABLE IF EXISTS products_unique_test CASCADE`);
       await db.dispose();
     }
   });

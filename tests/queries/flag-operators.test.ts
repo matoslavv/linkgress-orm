@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from '@jest/globals';
-import { createTestDatabase } from '../utils/test-database';
+import { createFreshClient } from '../utils/test-database';
 import { DbContext, DbEntityTable, DbModelConfig, DbEntity, DbColumn, integer, varchar, flagHas, flagHasAll, flagHasAny, flagHasNone } from '../../src';
 import { EntityMetadataStore } from '../../src/entity/entity-base';
 
@@ -43,10 +43,11 @@ describe('Flag Operators', () => {
     // Clear metadata store to avoid conflicts
     (EntityMetadataStore as any).metadata.clear();
 
-    const client = (createTestDatabase() as any).client;
+    const client = createFreshClient();
     db = new FlagTestDatabase(client);
 
-    await db.getSchemaManager().ensureDeleted();
+    // Only create/drop the test table, not the whole schema
+    await client.query(`DROP TABLE IF EXISTS flag_users_test CASCADE`);
     await db.getSchemaManager().ensureCreated();
 
     // Seed test data with various flag combinations
@@ -62,7 +63,8 @@ describe('Flag Operators', () => {
   });
 
   afterAll(async () => {
-    await db.getSchemaManager().ensureDeleted();
+    // Only drop the test table
+    await (db as any).client.query(`DROP TABLE IF EXISTS flag_users_test CASCADE`);
     await db.dispose();
   });
 

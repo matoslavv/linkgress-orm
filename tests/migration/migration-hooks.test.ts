@@ -72,11 +72,11 @@ describe('Migration Hooks', () => {
   });
 
   afterAll(async () => {
-    // Clean up
+    // Clean up test-specific objects only
     try {
       await client.query('DROP VIEW IF EXISTS active_users_view');
       await client.query('DROP FUNCTION IF EXISTS get_user_count()');
-      await db.getSchemaManager().ensureDeleted();
+      await client.query('DROP TABLE IF EXISTS custom_script_users CASCADE');
     } catch (error) {
       // Ignore cleanup errors
     }
@@ -166,8 +166,8 @@ describe('Migration Hooks', () => {
     // Should not throw error
     await expect(simpleDb.getSchemaManager().ensureCreated()).resolves.not.toThrow();
 
-    // Clean up
-    await simpleDb.getSchemaManager().ensureDeleted();
+    // Clean up test-specific table only
+    await simpleClient.query('DROP TABLE IF EXISTS simple_users CASCADE');
     await simpleDb.dispose();
   });
 });
