@@ -1388,6 +1388,23 @@ export class DataContext<TSchema extends ContextSchema = any> {
   }
 
   /**
+   * Get the underlying database client.
+   * Useful for advanced operations like multi-statement queries in migrations.
+   *
+   * @example
+   * ```typescript
+   * // Execute multi-statement SQL
+   * await db.getClient().querySimple(`
+   *   ALTER TABLE users ADD COLUMN new_field TEXT;
+   *   CREATE INDEX idx_users_new_field ON users(new_field);
+   * `);
+   * ```
+   */
+  getClient(): DatabaseClient {
+    return this.client;
+  }
+
+  /**
    * Execute in transaction
    * Creates a scoped transactional context to avoid race conditions with concurrent transactions.
    * Each transaction gets its own isolated context instance with fresh table accessors.

@@ -265,6 +265,36 @@ export {
   EnumMigrator,
 } from './migration/enum-migrator';
 
+// Manual migrations
+export type {
+  Migration,
+  MigrationConfig,
+  MigrationJournalEntry,
+  LoadedMigration,
+  MigrationRunResult,
+  MigrationDirection,
+} from './migration/migration.interface';
+
+export {
+  MigrationRunner,
+} from './migration/migration-runner';
+
+export {
+  MigrationJournal,
+} from './migration/migration-journal';
+
+export {
+  MigrationLoader,
+} from './migration/migration-loader';
+
+export {
+  MigrationScaffold,
+} from './migration/migration-scaffold';
+
+export type {
+  MigrationOperation,
+} from './migration/db-schema-manager';
+
 // Database clients
 export {
   DatabaseClient,

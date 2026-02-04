@@ -40,9 +40,9 @@ interface DbForeignKeyInfo {
 }
 
 /**
- * Migration operation types
+ * Migration operation types - describes schema changes to be applied
  */
-type MigrationOperation =
+export type MigrationOperation =
   | { type: 'create_schema'; schemaName: string }
   | { type: 'create_enum'; enumName: string; values: readonly string[] }
   | { type: 'create_sequence'; config: SequenceConfig }

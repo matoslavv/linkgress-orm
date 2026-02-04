@@ -1,6 +1,6 @@
 # Database Migrations Guide
 
-This guide covers database migrations using Linkgress ORM's `DbSchemaManager`, including automatic migrations, schema creation/deletion, and integration with your development workflow.
+This guide covers database migrations using Linkgress ORM, including automatic migrations, manual file-based migrations with journal tracking, schema creation/deletion, and integration with your development workflow.
 
 ## Table of Contents
 
@@ -10,30 +10,36 @@ This guide covers database migrations using Linkgress ORM's `DbSchemaManager`, i
   - [How It Works](#how-it-works)
   - [Running Migrations](#running-migrations)
   - [Interactive Confirmations](#interactive-confirmations)
+- [Manual Migrations (File-Based)](#manual-migrations-file-based)
+  - [Overview](#manual-migrations-overview)
+  - [Migration Files](#migration-files)
+  - [MigrationRunner](#migrationrunner)
+  - [MigrationScaffold](#migrationscaffold)
+  - [Migration Status](#migration-status)
+  - [Rolling Back Migrations](#rolling-back-migrations)
 - [Schema Creation and Deletion](#schema-creation-and-deletion)
   - [ensureCreated](#ensurecreated)
   - [ensureDeleted](#ensuredeleted)
 - [Post-Migration Hooks](#post-migration-hooks)
 - [NPM Script Integration](#npm-script-integration)
 - [Migration Operations](#migration-operations)
-- [Future: Planned Migrations with Journal](#future-planned-migrations-with-journal)
 
 ## Overview
 
-Linkgress ORM provides a powerful schema management system through the `DbSchemaManager` class. Currently, the ORM supports **automatic migrations** that analyze your entity models and synchronize them with your database schema.
+Linkgress ORM provides a powerful schema management system with two approaches to database migrations:
 
-**Current Features:**
+1. **Automatic Migrations** - Analyze your entity models and automatically synchronize them with your database schema
+2. **Manual Migrations** - File-based migrations with journal tracking, up/down support, and scaffolding
+
+**Features:**
 - Automatic migrations based on model comparison
+- Manual file-based migrations with journal tracking
+- Migration scaffolding from schema differences
+- Up/down migration support with rollback capabilities
 - Interactive confirmations for destructive operations
 - Schema creation from scratch
 - Complete schema deletion
 - Post-migration hooks for custom SQL
-
-**Planned Features:**
-- Migration journal/history tracking
-- Explicit migration files
-- Rollback support
-- Migration versioning
 
 ## DbSchemaManager
 
@@ -664,89 +670,357 @@ if (operations.length === 0) {
 }
 ```
 
-## Future: Planned Migrations with Journal
+## Manual Migrations (File-Based)
 
-**Status:** Planned feature (not yet implemented)
+<a name="manual-migrations-overview"></a>
+### Overview
 
-Future versions of Linkgress ORM will support explicit migration files with journal/history tracking, similar to other popular ORMs.
+Manual migrations provide explicit control over database schema changes with:
+- **Migration files** stored in a directory (TypeScript files)
+- **Journal table** tracking which migrations have been applied
+- **Up/down methods** for applying and reverting changes
+- **Scaffold generator** to create migrations from schema differences
 
-### Planned Features
-
-**Migration Journal:**
-- Track migration history in a database table
-- Record applied migrations with timestamps
-- Support for up/down migrations
+This approach is recommended for production environments where you need:
+- Version-controlled, reviewable schema changes
 - Rollback capabilities
+- Team collaboration on database changes
+- CI/CD integration with predictable migrations
 
-**Explicit Migration Files:**
+### Migration Files
+
+Migration files are TypeScript files placed in your migrations directory. Any `.ts` file is accepted (except `.d.ts` declaration files). The recommended naming convention is `YYYYMMDD-HHMMSS.ts` for automatic chronological ordering:
+
+```
+migrations/
+├── 20240115-093000.ts
+├── 20240120-143052.ts
+└── 20240125-110000.ts
+```
+
+You can also use other naming conventions - files are sorted lexicographically:
+```
+migrations/
+├── 001_create_users.ts
+├── 002_add_posts.ts
+└── 003_add_indexes.ts
+```
+
+Each migration file must export a default class implementing the `Migration` interface:
+
 ```typescript
-// migrations/001_create_users_table.ts
-export class CreateUsersTable implements Migration {
-  async up(schema: SchemaBuilder): Promise<void> {
-    await schema.createTable('users', table => {
-      table.integer('id').primaryKey();
-      table.varchar('username', 100).notNull();
-      table.text('email').notNull();
-    });
+// migrations/20240115-093000.ts
+import type { Migration } from 'linkgress-orm';
+import type { AppDatabase } from '../src/database';
+
+export default class implements Migration {
+  async up(db: AppDatabase): Promise<void> {
+    await db.query(`
+      ALTER TABLE "users" ADD COLUMN "phone_number" VARCHAR(20)
+    `);
   }
 
-  async down(schema: SchemaBuilder): Promise<void> {
-    await schema.dropTable('users');
+  async down(db: AppDatabase): Promise<void> {
+    await db.query(`
+      ALTER TABLE "users" DROP COLUMN "phone_number"
+    `);
   }
 }
 ```
 
-**Migration CLI:**
-```bash
-# Generate new migration
-linkgress migration:create add_users_table
+### MigrationRunner
 
-# Run pending migrations
-linkgress migration:up
+The `MigrationRunner` executes migrations and manages the journal.
 
-# Rollback last migration
-linkgress migration:down
-
-# View migration status
-linkgress migration:status
-```
-
-**Migration History Table:**
-```sql
-CREATE TABLE __linkgress_migrations (
-  id SERIAL PRIMARY KEY,
-  name VARCHAR(255) NOT NULL,
-  batch INTEGER NOT NULL,
-  applied_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-```
-
-### Current Workaround
-
-Until planned migrations are implemented, you can version your automatic migrations using these strategies:
-
-**1. Database Branching:**
-```bash
-# Create separate databases for different branches
-myapp_main
-myapp_develop
-myapp_feature_x
-```
-
-**2. Manual Tracking:**
 ```typescript
-// Track schema version in your database
-CREATE TABLE schema_version (
-  version INTEGER PRIMARY KEY,
-  applied_at TIMESTAMP DEFAULT NOW()
+import { MigrationRunner, PgClient } from 'linkgress-orm';
+import { AppDatabase } from './database';
+
+const client = new PgClient({
+  host: 'localhost',
+  port: 5432,
+  database: 'myapp',
+  user: 'postgres',
+  password: 'postgres',
+});
+
+const db = new AppDatabase(client);
+
+const runner = new MigrationRunner(db, {
+  migrationsDirectory: './migrations',
+  journalTable: '__migrations',     // default
+  journalSchema: 'public',          // default
+  verbose: true,                    // log progress
+  logger: console.log,              // custom logger
+});
+
+// Run all pending migrations
+const result = await runner.up();
+console.log(`Applied: ${result.applied.join(', ')}`);
+console.log(`Skipped: ${result.skipped.join(', ')}`);
+
+// Check for failures
+if (result.failed) {
+  console.error(`Failed: ${result.failed.filename} - ${result.failed.error.message}`);
+}
+
+await db.dispose();
+```
+
+**Key Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `up()` | Run all pending migrations in order |
+| `down(count)` | Revert the last N migrations |
+| `getPending()` | Get list of pending migration filenames |
+| `getApplied()` | Get list of applied migration filenames |
+| `status()` | Get detailed status of all migrations |
+
+**Transaction Safety:**
+Each migration runs inside a database transaction. If a migration fails, it is automatically rolled back, and subsequent migrations are not executed.
+
+### MigrationScaffold
+
+The `MigrationScaffold` generates migration files from schema differences.
+
+```typescript
+import { MigrationScaffold, PgClient } from 'linkgress-orm';
+import { AppDatabase } from './database';
+
+const client = new PgClient({
+  host: 'localhost',
+  port: 5432,
+  database: 'myapp',
+  user: 'postgres',
+  password: 'postgres',
+});
+
+const db = new AppDatabase(client);
+
+const scaffold = new MigrationScaffold(db, {
+  migrationsDirectory: './migrations',
+});
+
+// Generate migration from schema differences
+try {
+  const result = await scaffold.scaffold('../src/database');
+  console.log(`Created: ${result.filename}`);
+  console.log(`Path: ${result.path}`);
+  console.log(`Operations: ${result.operations}`);
+} catch (error) {
+  if (error.message.includes('No schema differences')) {
+    console.log('Database is in sync with model');
+  } else {
+    throw error;
+  }
+}
+
+// Generate empty migration template
+const empty = await scaffold.scaffoldEmpty('../src/database');
+console.log(`Created empty migration: ${empty.filename}`);
+
+await db.dispose();
+```
+
+The scaffold compares your database schema to your `DbContext` model and generates SQL for:
+- Creating/dropping schemas
+- Creating/dropping ENUM types
+- Creating/dropping sequences
+- Creating/dropping tables
+- Adding/dropping/altering columns
+- Creating/dropping indexes
+- Creating/dropping foreign keys
+
+**Generated Migration Example:**
+```typescript
+import type { Migration } from 'linkgress-orm';
+import type { AppDatabase } from '../src/database';
+
+export default class implements Migration {
+  async up(db: AppDatabase): Promise<void> {
+    await db.query(`CREATE SCHEMA IF NOT EXISTS "auth"`);
+    await db.query(`ALTER TABLE "users" ADD COLUMN "phone_number" VARCHAR(20)`);
+    await db.query(`CREATE INDEX "ix_users_email" ON "users" ("email")`);
+  }
+
+  async down(db: AppDatabase): Promise<void> {
+    await db.query(`DROP INDEX IF EXISTS "ix_users_email"`);
+    await db.query(`ALTER TABLE "users" DROP COLUMN "phone_number"`);
+    await db.query(`DROP SCHEMA IF EXISTS "auth" CASCADE`);
+  }
+}
+```
+
+### Migration Status
+
+Check the status of all migrations:
+
+```typescript
+const runner = new MigrationRunner(db, {
+  migrationsDirectory: './migrations',
+});
+
+const status = await runner.status();
+
+console.log('Migration Status:');
+for (const entry of status) {
+  const mark = entry.applied ? '✓' : '○';
+  const appliedAt = entry.appliedAt
+    ? entry.appliedAt.toISOString()
+    : 'pending';
+  console.log(`  ${mark} ${entry.filename} (${appliedAt})`);
+}
+```
+
+**Output:**
+```
+Migration Status:
+  ✓ 20240115-093000.ts (2024-01-15T09:30:05.123Z)
+  ✓ 20240120-143052.ts (2024-01-20T14:31:00.456Z)
+  ○ 20240125-110000.ts (pending)
+```
+
+### Rolling Back Migrations
+
+Revert migrations using the `down()` method:
+
+```typescript
+const runner = new MigrationRunner(db, {
+  migrationsDirectory: './migrations',
+  verbose: true,
+});
+
+// Revert the last migration
+const result = await runner.down(1);
+console.log(`Reverted: ${result.applied.join(', ')}`);
+
+// Revert the last 3 migrations
+const result3 = await runner.down(3);
+console.log(`Reverted: ${result3.applied.join(', ')}`);
+```
+
+**Important Notes:**
+- The `down()` method runs migrations in reverse order (most recent first)
+- Each rollback runs in a transaction for safety
+- Some operations cannot be auto-generated for `down()` (marked with comments in scaffolded files)
+
+### NPM Scripts for Manual Migrations
+
+Add these scripts to your `package.json`:
+
+```json
+{
+  "scripts": {
+    "migrate": "ts-node scripts/migrate.ts",
+    "migrate:down": "ts-node scripts/migrate-down.ts",
+    "migrate:status": "ts-node scripts/migrate-status.ts",
+    "migrate:scaffold": "ts-node scripts/migrate-scaffold.ts"
+  }
+}
+```
+
+**scripts/migrate.ts:**
+```typescript
+import 'dotenv/config';
+import { MigrationRunner, PgClient } from 'linkgress-orm';
+import { AppDatabase } from '../src/database';
+
+async function migrate() {
+  const client = new PgClient({
+    host: process.env.DB_HOST || 'localhost',
+    port: parseInt(process.env.DB_PORT || '5432'),
+    database: process.env.DB_NAME || 'myapp',
+    user: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASSWORD || 'postgres',
+  });
+
+  const db = new AppDatabase(client);
+  const runner = new MigrationRunner(db, {
+    migrationsDirectory: './migrations',
+    verbose: true,
+  });
+
+  try {
+    const result = await runner.up();
+    if (result.applied.length > 0) {
+      console.log(`\n✓ Applied ${result.applied.length} migration(s)`);
+    } else {
+      console.log('\n✓ Database is up to date');
+    }
+    process.exit(0);
+  } catch (error) {
+    console.error('\n❌ Migration failed:', error);
+    process.exit(1);
+  } finally {
+    await db.dispose();
+  }
+}
+
+migrate();
+```
+
+**scripts/migrate-scaffold.ts:**
+```typescript
+import 'dotenv/config';
+import { MigrationScaffold, PgClient } from 'linkgress-orm';
+import { AppDatabase } from '../src/database';
+
+async function scaffold() {
+  const client = new PgClient({
+    host: process.env.DB_HOST || 'localhost',
+    port: parseInt(process.env.DB_PORT || '5432'),
+    database: process.env.DB_NAME || 'myapp',
+    user: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASSWORD || 'postgres',
+  });
+
+  const db = new AppDatabase(client);
+  const scaffold = new MigrationScaffold(db, {
+    migrationsDirectory: './migrations',
+  });
+
+  try {
+    const result = await scaffold.scaffold('../src/database');
+    console.log(`✓ Created migration: ${result.filename}`);
+    console.log(`  Path: ${result.path}`);
+    console.log(`  Operations: ${result.operations}`);
+    process.exit(0);
+  } catch (error: any) {
+    if (error.message?.includes('No schema differences')) {
+      console.log('✓ Database is in sync with model - no migration needed');
+      process.exit(0);
+    }
+    console.error('❌ Scaffold failed:', error);
+    process.exit(1);
+  } finally {
+    await db.dispose();
+  }
+}
+
+scaffold();
+```
+
+### Journal Table
+
+The migration journal is stored in a database table (default: `__migrations`):
+
+```sql
+CREATE TABLE "__migrations" (
+  id SERIAL PRIMARY KEY,
+  filename VARCHAR(255) NOT NULL UNIQUE,
+  applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ```
 
-**3. Backup Before Migration:**
-```bash
-# Always backup before running migrations
-pg_dump myapp > backup_$(date +%Y%m%d_%H%M%S).sql
-npm run db:migrate
+The table is created automatically when you first run migrations. You can customize the table name and schema:
+
+```typescript
+const runner = new MigrationRunner(db, {
+  migrationsDirectory: './migrations',
+  journalTable: 'schema_migrations',  // custom table name
+  journalSchema: 'admin',             // custom schema
+});
 ```
 
 ## Best Practices
