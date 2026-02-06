@@ -479,14 +479,14 @@ ${contextImport}
 export default class implements Migration {
   async up(db: ${contextType}): Promise<void> {
     // Add your migration SQL here
-    await db.getClient().querySimple(\`
+    await db.query(\`
       -- Your UP migration SQL
     \`);
   }
 
   async down(db: ${contextType}): Promise<void> {
     // Add your rollback SQL here
-    await db.getClient().querySimple(\`
+    await db.query(\`
       -- Your DOWN migration SQL
     \`);
   }
