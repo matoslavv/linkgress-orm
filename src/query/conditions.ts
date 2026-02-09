@@ -203,7 +203,11 @@ export abstract class WhereConditionBase {
    * Helper to extract database column name from field reference
    * Returns the fully qualified column name (with table alias if present)
    */
-  protected getDbColumnName<T extends string, V = any>(field: FieldRef<T, V> | T): string {
+  protected getDbColumnName<T extends string, V = any>(field: FieldRef<T, V> | T, context?: SqlBuildContext): string {
+    // SqlFragment — build it to get raw SQL (e.g. sql`${field}::varchar(255)`)
+    if (field instanceof SqlFragment) {
+      return field.buildSql(context!);
+    }
     if (typeof field === 'object' && '__dbColumnName' in field) {
       // Check if field has a table alias
       if ('__tableAlias' in field && (field as any).__tableAlias) {
@@ -295,7 +299,9 @@ export abstract class WhereComparisonBase<V = any> extends WhereConditionBase {
    */
   override getFieldRefs(): FieldRef[] {
     const refs: FieldRef[] = [];
-    if (this.isFieldRef(this.field)) {
+    if (this.field instanceof SqlFragment) {
+      refs.push(...this.field.getFieldRefs());
+    } else if (this.isFieldRef(this.field)) {
       refs.push(this.field);
     }
     if (this.value !== undefined && this.isFieldRef(this.value)) {
@@ -309,7 +315,7 @@ export abstract class WhereComparisonBase<V = any> extends WhereConditionBase {
    * Can be overridden for custom behavior
    */
   buildSql(context: SqlBuildContext): string {
-    const fieldName = this.getDbColumnName(this.field); // Returns already quoted name
+    const fieldName = this.getDbColumnName(this.field, context);
     const operator = this.getOperator();
 
     if (this.value !== undefined) {
@@ -404,7 +410,7 @@ export class EqComparison<V = any> extends WhereComparisonBase<V> {
   override buildSql(context: SqlBuildContext): string {
     // Handle null/undefined: eq(field, null) and eq(field, undefined) → IS NULL
     if (this.value === null || this.value === undefined) {
-      const fieldName = this.getDbColumnName(this.field);
+      const fieldName = this.getDbColumnName(this.field, context);
       return `${fieldName} IS NULL`;
     }
     return super.buildSql(context);
@@ -424,7 +430,7 @@ export class NeComparison<V = any> extends WhereComparisonBase<V> {
   override buildSql(context: SqlBuildContext): string {
     // Handle null/undefined: ne(field, null) and ne(field, undefined) → IS NOT NULL
     if (this.value === null || this.value === undefined) {
-      const fieldName = this.getDbColumnName(this.field);
+      const fieldName = this.getDbColumnName(this.field, context);
       return `${fieldName} IS NOT NULL`;
     }
     return super.buildSql(context);
@@ -499,7 +505,7 @@ export class InComparison<V = any> extends WhereComparisonBase<V> {
   }
 
   buildSql(context: SqlBuildContext): string {
-    const fieldName = this.getDbColumnName(this.field); // Returns already quoted name
+    const fieldName = this.getDbColumnName(this.field, context);
 
     if (!Array.isArray(this.values) || this.values.length === 0) {
       return '1=0'; // No matches
@@ -536,7 +542,7 @@ export class NotInComparison<V = any> extends WhereComparisonBase<V> {
   }
 
   buildSql(context: SqlBuildContext): string {
-    const fieldName = this.getDbColumnName(this.field); // Returns already quoted name
+    const fieldName = this.getDbColumnName(this.field, context);
 
     if (!Array.isArray(this.values) || this.values.length === 0) {
       return '1=1'; // All match
@@ -588,7 +594,7 @@ export class BetweenComparison<V = any> extends WhereComparisonBase<V> {
   }
 
   buildSql(context: SqlBuildContext): string {
-    const fieldName = this.getDbColumnName(this.field); // Returns already quoted name
+    const fieldName = this.getDbColumnName(this.field, context);
     // Pass the field to getRightSide so it can apply toDriver mapper
     const minSide = this.getRightSide(this.min, context, this.field);
     const maxSide = this.getRightSide(this.max, context, this.field);
