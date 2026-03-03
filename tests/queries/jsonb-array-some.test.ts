@@ -131,7 +131,7 @@ describe('jsonbArraySome', () => {
       __fieldName: 'configData',
     } as any;
     const condition = jsonbArraySome<{ active: boolean }>(noAliasField, c =>
-      eq(c.active, 'true')
+      eq(c.active, true)
     );
     const ctx = makeContext();
     const sql = condition.buildSql(ctx);

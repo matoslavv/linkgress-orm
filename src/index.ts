@@ -110,6 +110,7 @@ export {
   jsonbSelect,
   jsonbSelectText,
   jsonbArraySome,
+  jsonbConditionUnwrap,
   JsonbElement,
   flagHas,
   flagHasAll,

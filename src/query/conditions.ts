@@ -928,7 +928,7 @@ export function jsonbSelectText<TJsonb, TKey extends keyof TJsonb & string = key
  * Values are compared as text (PostgreSQL ->> operator) which works naturally
  * with string, number, and boolean comparisons via the pg driver's text protocol.
  */
-export type JsonbElement<T> = SqlFragment<string> & {
+export type JsonbElement<T> = SqlFragment<T> & {
   readonly [K in keyof T]-?: JsonbElement<NonNullable<T[K]>>;
 };
 
@@ -1043,6 +1043,21 @@ export function jsonbArraySome<T>(
   const elementProxy = createJsonbElementProxy<T>('__elem');
   const condition = predicate(elementProxy);
   return new JsonbArraySomeCondition(jsonbField, condition as WhereConditionBase);
+}
+
+/**
+ * Converts a value to its string representation for JSONB text comparisons.
+ * The PostgreSQL ->> operator always returns text, so comparison values must be strings.
+ *
+ * @example
+ * ```typescript
+ * jsonbArraySome<IntegrationConfig>(p.integrationConfig, c =>
+ *   eq(c.type, jsonbConditionUnwrap(IntegrationType.VILLAPRO))
+ * )
+ * ```
+ */
+export function jsonbConditionUnwrap<T>(value: T): T {
+  return String(value) as any;
 }
 
 // ============================================================================
