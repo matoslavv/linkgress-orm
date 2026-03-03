@@ -109,6 +109,8 @@ export {
   coalesce,
   jsonbSelect,
   jsonbSelectText,
+  jsonbArraySome,
+  JsonbElement,
   flagHas,
   flagHasAll,
   flagHasAny,
