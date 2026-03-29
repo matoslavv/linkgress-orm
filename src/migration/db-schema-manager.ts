@@ -1,5 +1,6 @@
 import * as readline from 'readline';
 import { DatabaseClient } from '../database/database-client.interface';
+import { LogLevel } from '../entity/db-context';
 import { TableSchema } from '../schema/table-builder';
 import { ColumnConfig } from '../schema/column-builder';
 import { EnumTypeRegistry } from '../types/enum-builder';
@@ -61,6 +62,7 @@ export type MigrationOperation =
  */
 export class DbSchemaManager {
   private logQueries: boolean;
+  private logger: (message: string, level?: LogLevel) => void;
   private postMigrationHook?: (client: DatabaseClient) => Promise<void>;
   private sequenceRegistry: Map<string, SequenceConfig>;
   private rl: readline.Interface | null = null;
@@ -70,11 +72,13 @@ export class DbSchemaManager {
     private schemaRegistry: Map<string, TableSchema>,
     options?: {
       logQueries?: boolean;
+      logger?: (message: string, level?: LogLevel) => void;
       postMigrationHook?: (client: DatabaseClient) => Promise<void>;
       sequenceRegistry?: Map<string, SequenceConfig>;
     }
   ) {
     this.logQueries = options?.logQueries ?? false;
+    this.logger = options?.logger ?? console.log;
     this.postMigrationHook = options?.postMigrationHook;
     this.sequenceRegistry = options?.sequenceRegistry ?? new Map();
   }
@@ -125,18 +129,18 @@ export class DbSchemaManager {
     if (schemas.size === 0) return;
 
     if (this.logQueries) {
-      console.log('Creating schemas...\n');
+      this.logger('Creating schemas...\n');
     }
 
     for (const schemaName of schemas) {
       const createSchemaSQL = `CREATE SCHEMA IF NOT EXISTS "${schemaName}"`;
 
       if (this.logQueries) {
-        console.log(`  Creating schema "${schemaName}"...`);
+        this.logger(`  Creating schema "${schemaName}"...`);
       }
       await this.client.query(createSchemaSQL);
       if (this.logQueries) {
-        console.log(`  ✓ Schema "${schemaName}" created\n`);
+        this.logger(`  ✓ Schema "${schemaName}" created\n`);
       }
     }
   }
@@ -150,7 +154,7 @@ export class DbSchemaManager {
     if (enums.size === 0) return;
 
     if (this.logQueries) {
-      console.log('Creating ENUM types...\n');
+      this.logger('Creating ENUM types...\n');
     }
 
     for (const [enumName, enumDef] of enums.entries()) {
@@ -168,14 +172,14 @@ export class DbSchemaManager {
         const createEnumSQL = `CREATE TYPE "${enumName}" AS ENUM (${values})`;
 
         if (this.logQueries) {
-          console.log(`  Creating ENUM type "${enumName}"...`);
+          this.logger(`  Creating ENUM type "${enumName}"...`);
         }
         await this.client.query(createEnumSQL);
         if (this.logQueries) {
-          console.log(`  ✓ ENUM type "${enumName}" created\n`);
+          this.logger(`  ✓ ENUM type "${enumName}" created\n`);
         }
       } else if (this.logQueries) {
-        console.log(`  ENUM type "${enumName}" already exists, skipping\n`);
+        this.logger(`  ENUM type "${enumName}" already exists, skipping\n`);
       }
     }
   }
@@ -187,7 +191,7 @@ export class DbSchemaManager {
     if (this.sequenceRegistry.size === 0) return;
 
     if (this.logQueries) {
-      console.log('Creating sequences...\n');
+      this.logger('Creating sequences...\n');
     }
 
     for (const [_, config] of this.sequenceRegistry.entries()) {
@@ -239,14 +243,14 @@ export class DbSchemaManager {
         }
 
         if (this.logQueries) {
-          console.log(`  Creating sequence ${qualifiedName}...`);
+          this.logger(`  Creating sequence ${qualifiedName}...`);
         }
         await this.client.query(createSQL);
         if (this.logQueries) {
-          console.log(`  ✓ Sequence ${qualifiedName} created\n`);
+          this.logger(`  ✓ Sequence ${qualifiedName} created\n`);
         }
       } else if (this.logQueries) {
-        console.log(`  Sequence ${qualifiedName} already exists, skipping\n`);
+        this.logger(`  Sequence ${qualifiedName} already exists, skipping\n`);
       }
     }
   }
@@ -366,11 +370,11 @@ export class DbSchemaManager {
     `;
 
     if (this.logQueries) {
-      console.log(`  Creating table ${qualifiedTableName}...`);
+      this.logger(`  Creating table ${qualifiedTableName}...`);
     }
     await this.client.query(createTableSQL);
     if (this.logQueries) {
-      console.log(`  ✓ Table ${qualifiedTableName} created\n`);
+      this.logger(`  ✓ Table ${qualifiedTableName} created\n`);
     }
   }
 
@@ -400,11 +404,11 @@ export class DbSchemaManager {
       }
 
       if (this.logQueries) {
-        console.log(`  Adding foreign key ${fk.name} to ${qualifiedTableName}...`);
+        this.logger(`  Adding foreign key ${fk.name} to ${qualifiedTableName}...`);
       }
       await this.client.query(alterSQL);
       if (this.logQueries) {
-        console.log(`  ✓ Foreign key ${fk.name} added\n`);
+        this.logger(`  ✓ Foreign key ${fk.name} added\n`);
       }
     }
 
@@ -417,11 +421,11 @@ export class DbSchemaManager {
         const alterSQL = `ALTER TABLE ${qualifiedTableName} ADD CONSTRAINT "${fkName}" FOREIGN KEY ("${config.name}") REFERENCES "${config.references.table}"("${config.references.column}")`;
 
         if (this.logQueries) {
-          console.log(`  Adding foreign key ${fkName} to ${qualifiedTableName}...`);
+          this.logger(`  Adding foreign key ${fkName} to ${qualifiedTableName}...`);
         }
         await this.client.query(alterSQL);
         if (this.logQueries) {
-          console.log(`  ✓ Foreign key ${fkName} added\n`);
+          this.logger(`  ✓ Foreign key ${fkName} added\n`);
         }
       }
     }
@@ -499,7 +503,7 @@ export class DbSchemaManager {
     // Fall back to original order and let the database handle it
     if (sorted.length !== tables.length) {
       if (this.logQueries) {
-        console.log('Warning: Circular dependency detected in table foreign keys, using original order\n');
+        this.logger('Warning: Circular dependency detected in table foreign keys, using original order\n', 'warn');
       }
       return tables;
     }
@@ -512,7 +516,7 @@ export class DbSchemaManager {
    */
   async ensureCreated(): Promise<void> {
     if (this.logQueries) {
-      console.log('Creating database schema...\n');
+      this.logger('Creating database schema...\n');
     }
 
     // Create schemas first
@@ -536,17 +540,17 @@ export class DbSchemaManager {
     }
 
     if (this.logQueries) {
-      console.log('✓ Database schema created successfully\n');
+      this.logger('✓ Database schema created successfully\n');
     }
 
     // Execute post-migration hook if provided
     if (this.postMigrationHook) {
       if (this.logQueries) {
-        console.log('Executing post-migration scripts...\n');
+        this.logger('Executing post-migration scripts...\n');
       }
       await this.postMigrationHook(this.client);
       if (this.logQueries) {
-        console.log('✓ Post-migration scripts completed\n');
+        this.logger('✓ Post-migration scripts completed\n');
       }
     }
   }
@@ -566,23 +570,23 @@ export class DbSchemaManager {
    */
   async ensureDeleted(): Promise<void> {
     if (this.logQueries) {
-      console.log('Dropping database schema...\n');
+      this.logger('Dropping database schema...\n');
     }
 
     for (const [tableName, tableSchema] of this.schemaRegistry.entries()) {
       const qualifiedTableName = this.getQualifiedTableName(tableName, tableSchema.schema);
       if (this.logQueries) {
-        console.log(`  Dropping table ${qualifiedTableName}...`);
+        this.logger(`  Dropping table ${qualifiedTableName}...`);
       }
       await this.client.query(`DROP TABLE IF EXISTS ${qualifiedTableName} CASCADE`);
       if (this.logQueries) {
-        console.log(`  ✓ Table ${qualifiedTableName} dropped\n`);
+        this.logger(`  ✓ Table ${qualifiedTableName} dropped\n`);
       }
     }
 
     // Drop sequences
     if (this.sequenceRegistry.size > 0 && this.logQueries) {
-      console.log('Dropping sequences...\n');
+      this.logger('Dropping sequences...\n');
     }
 
     for (const [_, config] of this.sequenceRegistry.entries()) {
@@ -591,27 +595,27 @@ export class DbSchemaManager {
         : `"${config.name}"`;
 
       if (this.logQueries) {
-        console.log(`  Dropping sequence ${qualifiedName}...`);
+        this.logger(`  Dropping sequence ${qualifiedName}...`);
       }
       await this.client.query(`DROP SEQUENCE IF EXISTS ${qualifiedName} CASCADE`);
       if (this.logQueries) {
-        console.log(`  ✓ Sequence ${qualifiedName} dropped\n`);
+        this.logger(`  ✓ Sequence ${qualifiedName} dropped\n`);
       }
     }
 
     // Drop enum types
     const enums = EnumTypeRegistry.getAll();
     if (enums.size > 0 && this.logQueries) {
-      console.log('Dropping ENUM types...\n');
+      this.logger('Dropping ENUM types...\n');
     }
 
     for (const [enumName, _] of enums.entries()) {
       if (this.logQueries) {
-        console.log(`  Dropping ENUM type "${enumName}"...`);
+        this.logger(`  Dropping ENUM type "${enumName}"...`);
       }
       await this.client.query(`DROP TYPE IF EXISTS "${enumName}" CASCADE`);
       if (this.logQueries) {
-        console.log(`  ✓ ENUM type "${enumName}" dropped\n`);
+        this.logger(`  ✓ ENUM type "${enumName}" dropped\n`);
       }
     }
 
@@ -624,21 +628,21 @@ export class DbSchemaManager {
     }
 
     if (schemas.size > 0 && this.logQueries) {
-      console.log('Dropping schemas...\n');
+      this.logger('Dropping schemas...\n');
     }
 
     for (const schemaName of schemas) {
       if (this.logQueries) {
-        console.log(`  Dropping schema "${schemaName}"...`);
+        this.logger(`  Dropping schema "${schemaName}"...`);
       }
       await this.client.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
       if (this.logQueries) {
-        console.log(`  ✓ Schema "${schemaName}" dropped\n`);
+        this.logger(`  ✓ Schema "${schemaName}" dropped\n`);
       }
     }
 
     if (this.logQueries) {
-      console.log('✓ Database schema dropped successfully\n');
+      this.logger('✓ Database schema dropped successfully\n');
     }
   }
 
@@ -646,7 +650,7 @@ export class DbSchemaManager {
    * Analyze differences between current DB and model schema
    */
   async analyze(): Promise<MigrationOperation[]> {
-    console.log('🔍 Analyzing database schema...\n');
+    this.logger('🔍 Analyzing database schema...\n');
 
     const operations: MigrationOperation[] = [];
 
@@ -800,7 +804,7 @@ export class DbSchemaManager {
       const operations = await this.analyze();
 
       if (operations.length === 0) {
-        console.log('✓ Database schema is already in sync with model\n');
+        this.logger('✓ Database schema is already in sync with model\n');
         return;
       }
 
@@ -884,18 +888,18 @@ export class DbSchemaManager {
       }
 
       const totalOps = phase1Ops.length + phase2Ops.length + phase3Ops.length;
-      console.log(`📋 Found ${totalOps} operations to perform:\n`);
+      this.logger(`📋 Found ${totalOps} operations to perform:\n`);
 
       // Show all operations
       let opNum = 1;
       for (const op of [...phase1Ops, ...phase2Ops, ...phase3Ops]) {
-        console.log(`${opNum++}. ${this.describeOperation(op)}`);
+        this.logger(`${opNum++}. ${this.describeOperation(op)}`);
       }
-      console.log('');
+      this.logger('');
 
       // Phase 1: Create schemas, enums, tables (without FKs), column changes
       if (phase1Ops.length > 0) {
-        console.log('📦 Phase 1: Creating schemas, enums, and tables...\n');
+        this.logger('📦 Phase 1: Creating schemas, enums, and tables...\n');
         for (const operation of phase1Ops) {
           await this.executeOperation(operation, { skipForeignKeys: tablesToCreate.has((operation as any).tableName) });
         }
@@ -903,7 +907,7 @@ export class DbSchemaManager {
 
       // Phase 2: Add foreign key constraints
       if (phase2Ops.length > 0) {
-        console.log('🔗 Phase 2: Adding foreign key constraints...\n');
+        this.logger('🔗 Phase 2: Adding foreign key constraints...\n');
         for (const operation of phase2Ops) {
           await this.executeOperation(operation);
         }
@@ -911,22 +915,22 @@ export class DbSchemaManager {
 
       // Phase 3: Create indexes and other operations
       if (phase3Ops.length > 0) {
-        console.log('📇 Phase 3: Creating indexes...\n');
+        this.logger('📇 Phase 3: Creating indexes...\n');
         for (const operation of phase3Ops) {
           await this.executeOperation(operation);
         }
       }
 
-      console.log('\n✓ Migration completed successfully\n');
+      this.logger('\n✓ Migration completed successfully\n');
 
       // Execute post-migration hook if provided
       if (this.postMigrationHook) {
         if (this.logQueries) {
-          console.log('Executing post-migration scripts...\n');
+          this.logger('Executing post-migration scripts...\n');
         }
         await this.postMigrationHook(this.client);
         if (this.logQueries) {
-          console.log('✓ Post-migration scripts completed\n');
+          this.logger('✓ Post-migration scripts completed\n');
         }
       }
     } finally {
@@ -962,7 +966,7 @@ export class DbSchemaManager {
         if (await this.confirm(`Drop table "${operation.tableName}"? This will DELETE ALL DATA in the table.`)) {
           await this.executeDropTable(operation.tableName);
         } else {
-          console.log(`  ⊘ Skipped dropping table "${operation.tableName}"\n`);
+          this.logger(`  ⊘ Skipped dropping table "${operation.tableName}"\n`, 'warn');
         }
         break;
 
@@ -974,7 +978,7 @@ export class DbSchemaManager {
         if (await this.confirm(`Drop column "${operation.tableName}"."${operation.columnName}"? This will DELETE ALL DATA in the column.`)) {
           await this.executeDropColumn(operation.tableName, operation.columnName, operation.schema);
         } else {
-          console.log(`  ⊘ Skipped dropping column "${operation.tableName}"."${operation.columnName}"\n`);
+          this.logger(`  ⊘ Skipped dropping column "${operation.tableName}"."${operation.columnName}"\n`, 'warn');
         }
         break;
 
@@ -990,7 +994,7 @@ export class DbSchemaManager {
         if (await this.confirm(`Drop index "${operation.indexName}"?`)) {
           await this.executeDropIndex(operation.indexName, operation.schema);
         } else {
-          console.log(`  ⊘ Skipped dropping index "${operation.indexName}"\n`);
+          this.logger(`  ⊘ Skipped dropping index "${operation.indexName}"\n`, 'warn');
         }
         break;
 
@@ -1002,7 +1006,7 @@ export class DbSchemaManager {
         if (await this.confirm(`Drop foreign key "${operation.constraintName}"?`)) {
           await this.executeDropForeignKey(operation.tableName, operation.constraintName, operation.schema);
         } else {
-          console.log(`  ⊘ Skipped dropping foreign key "${operation.constraintName}"\n`);
+          this.logger(`  ⊘ Skipped dropping foreign key "${operation.constraintName}"\n`, 'warn');
         }
         break;
     }
@@ -1012,19 +1016,19 @@ export class DbSchemaManager {
    * Execute create schema
    */
   private async executeCreateSchema(schemaName: string): Promise<void> {
-    console.log(`  Creating schema "${schemaName}"...`);
+    this.logger(`  Creating schema "${schemaName}"...`);
     await this.client.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
-    console.log(`  ✓ Schema "${schemaName}" created\n`);
+    this.logger(`  ✓ Schema "${schemaName}" created\n`);
   }
 
   /**
    * Execute create enum
    */
   private async executeCreateEnum(enumName: string, values: readonly string[]): Promise<void> {
-    console.log(`  Creating ENUM type "${enumName}"...`);
+    this.logger(`  Creating ENUM type "${enumName}"...`);
     const valueList = values.map(v => `'${v}'`).join(', ');
     await this.client.query(`CREATE TYPE "${enumName}" AS ENUM (${valueList})`);
-    console.log(`  ✓ ENUM type "${enumName}" created\n`);
+    this.logger(`  ✓ ENUM type "${enumName}" created\n`);
   }
 
   /**
@@ -1035,7 +1039,7 @@ export class DbSchemaManager {
       ? `"${config.schema}"."${config.name}"`
       : `"${config.name}"`;
 
-    console.log(`  Creating sequence ${qualifiedName}...`);
+    this.logger(`  Creating sequence ${qualifiedName}...`);
 
     // Build CREATE SEQUENCE statement
     let createSQL = `CREATE SEQUENCE ${qualifiedName}`;
@@ -1065,16 +1069,16 @@ export class DbSchemaManager {
     }
 
     await this.client.query(createSQL);
-    console.log(`  ✓ Sequence ${qualifiedName} created\n`);
+    this.logger(`  ✓ Sequence ${qualifiedName} created\n`);
   }
 
   /**
    * Execute drop table
    */
   private async executeDropTable(tableName: string): Promise<void> {
-    console.log(`  Dropping table "${tableName}"...`);
+    this.logger(`  Dropping table "${tableName}"...`);
     await this.client.query(`DROP TABLE "${tableName}" CASCADE`);
-    console.log(`  ✓ Table "${tableName}" dropped\n`);
+    this.logger(`  ✓ Table "${tableName}" dropped\n`);
   }
 
   /**
@@ -1082,7 +1086,7 @@ export class DbSchemaManager {
    */
   private async executeAddColumn(tableName: string, columnName: string, config: ColumnConfig, schema?: string): Promise<void> {
     const qualifiedTableName = this.getQualifiedTableName(tableName, schema);
-    console.log(`  Adding column ${qualifiedTableName}."${columnName}"...`);
+    this.logger(`  Adding column ${qualifiedTableName}."${columnName}"...`);
 
     let def = `${config.type}`;
 
@@ -1108,7 +1112,7 @@ export class DbSchemaManager {
 
     const sql = `ALTER TABLE ${qualifiedTableName} ADD COLUMN "${columnName}" ${def}`;
     await this.client.query(sql);
-    console.log(`  ✓ Column ${qualifiedTableName}."${columnName}" added\n`);
+    this.logger(`  ✓ Column ${qualifiedTableName}."${columnName}" added\n`);
   }
 
   /**
@@ -1116,9 +1120,9 @@ export class DbSchemaManager {
    */
   private async executeDropColumn(tableName: string, columnName: string, schema?: string): Promise<void> {
     const qualifiedTableName = this.getQualifiedTableName(tableName, schema);
-    console.log(`  Dropping column ${qualifiedTableName}."${columnName}"...`);
+    this.logger(`  Dropping column ${qualifiedTableName}."${columnName}"...`);
     await this.client.query(`ALTER TABLE ${qualifiedTableName} DROP COLUMN "${columnName}"`);
-    console.log(`  ✓ Column ${qualifiedTableName}."${columnName}" dropped\n`);
+    this.logger(`  ✓ Column ${qualifiedTableName}."${columnName}" dropped\n`);
   }
 
   /**
@@ -1126,9 +1130,9 @@ export class DbSchemaManager {
    */
   private async executeAlterColumn(tableName: string, columnName: string, from: DbColumnInfo, to: ColumnConfig, schema?: string): Promise<void> {
     const qualifiedTableName = this.getQualifiedTableName(tableName, schema);
-    console.log(`  Altering column ${qualifiedTableName}."${columnName}"...`);
-    console.log(`    From: ${this.describeDbColumn(from)}`);
-    console.log(`    To:   ${this.describeModelColumn(to)}`);
+    this.logger(`  Altering column ${qualifiedTableName}."${columnName}"...`);
+    this.logger(`    From: ${this.describeDbColumn(from)}`);
+    this.logger(`    To:   ${this.describeModelColumn(to)}`);
 
     // PostgreSQL requires separate ALTER COLUMN commands for different changes
 
@@ -1138,7 +1142,7 @@ export class DbSchemaManager {
     if (fromType !== toType) {
       const typeDef = this.buildTypeDefinition(to);
       await this.client.query(`ALTER TABLE ${qualifiedTableName} ALTER COLUMN "${columnName}" TYPE ${typeDef} USING "${columnName}"::${typeDef}`);
-      console.log(`    ✓ Type changed from ${fromType} to ${toType}`);
+      this.logger(`    ✓ Type changed from ${fromType} to ${toType}`);
     }
 
     // Change nullability if needed
@@ -1147,10 +1151,10 @@ export class DbSchemaManager {
     if (fromNullable !== toNullable) {
       if (toNullable) {
         await this.client.query(`ALTER TABLE ${qualifiedTableName} ALTER COLUMN "${columnName}" DROP NOT NULL`);
-        console.log(`    ✓ Nullability changed to NULLABLE`);
+        this.logger(`    ✓ Nullability changed to NULLABLE`);
       } else {
         await this.client.query(`ALTER TABLE ${qualifiedTableName} ALTER COLUMN "${columnName}" SET NOT NULL`);
-        console.log(`    ✓ Nullability changed to NOT NULL`);
+        this.logger(`    ✓ Nullability changed to NOT NULL`);
       }
     }
 
@@ -1160,14 +1164,14 @@ export class DbSchemaManager {
     if (fromDefault !== toDefault) {
       if (toDefault !== null) {
         await this.client.query(`ALTER TABLE ${qualifiedTableName} ALTER COLUMN "${columnName}" SET DEFAULT ${toDefault}`);
-        console.log(`    ✓ Default changed to ${toDefault}`);
+        this.logger(`    ✓ Default changed to ${toDefault}`);
       } else {
         await this.client.query(`ALTER TABLE ${qualifiedTableName} ALTER COLUMN "${columnName}" DROP DEFAULT`);
-        console.log(`    ✓ Default removed`);
+        this.logger(`    ✓ Default removed`);
       }
     }
 
-    console.log(`  ✓ Column ${qualifiedTableName}."${columnName}" altered\n`);
+    this.logger(`  ✓ Column ${qualifiedTableName}."${columnName}" altered\n`);
   }
 
   /**
@@ -1176,13 +1180,13 @@ export class DbSchemaManager {
   private async executeCreateIndex(tableName: string, indexName: string, columns: string[], isUnique?: boolean, schema?: string): Promise<void> {
     const uniqueStr = isUnique ? 'UNIQUE ' : '';
     const qualifiedTableName = this.getQualifiedTableName(tableName, schema);
-    console.log(`  Creating ${uniqueStr}index "${indexName}" on ${qualifiedTableName}...`);
+    this.logger(`  Creating ${uniqueStr}index "${indexName}" on ${qualifiedTableName}...`);
 
     const columnList = columns.map(col => `"${col}"`).join(', ');
     const sql = `CREATE ${uniqueStr}INDEX IF NOT EXISTS "${indexName}" ON ${qualifiedTableName} (${columnList})`;
 
     await this.client.query(sql);
-    console.log(`  ✓ ${uniqueStr}Index "${indexName}" created\n`);
+    this.logger(`  ✓ ${uniqueStr}Index "${indexName}" created\n`);
   }
 
   /**
@@ -1190,9 +1194,9 @@ export class DbSchemaManager {
    */
   private async executeDropIndex(indexName: string, schema?: string): Promise<void> {
     const qualifiedIndexName = schema ? `"${schema}"."${indexName}"` : `"${indexName}"`;
-    console.log(`  Dropping index ${qualifiedIndexName}...`);
+    this.logger(`  Dropping index ${qualifiedIndexName}...`);
     await this.client.query(`DROP INDEX ${qualifiedIndexName}`);
-    console.log(`  ✓ Index ${qualifiedIndexName} dropped\n`);
+    this.logger(`  ✓ Index ${qualifiedIndexName} dropped\n`);
   }
 
   /**
@@ -1203,7 +1207,7 @@ export class DbSchemaManager {
     const referencedTableSchema = this.schemaRegistry?.get(constraint.referencedTable);
     const qualifiedReferencedTable = this.getQualifiedTableName(constraint.referencedTable, referencedTableSchema?.schema);
 
-    console.log(`  Creating foreign key constraint "${constraint.name}" on ${qualifiedTableName}...`);
+    this.logger(`  Creating foreign key constraint "${constraint.name}" on ${qualifiedTableName}...`);
 
     const columnList = constraint.columns.map((col: string) => `"${col}"`).join(', ');
     const refColumnList = constraint.referencedColumns.map((col: string) => `"${col}"`).join(', ');
@@ -1221,7 +1225,7 @@ export class DbSchemaManager {
     }
 
     await this.client.query(sql);
-    console.log(`  ✓ Foreign key constraint "${constraint.name}" created\n`);
+    this.logger(`  ✓ Foreign key constraint "${constraint.name}" created\n`);
   }
 
   /**
@@ -1229,9 +1233,9 @@ export class DbSchemaManager {
    */
   private async executeDropForeignKey(tableName: string, constraintName: string, schema?: string): Promise<void> {
     const qualifiedTableName = this.getQualifiedTableName(tableName, schema);
-    console.log(`  Dropping foreign key constraint "${constraintName}" from ${qualifiedTableName}...`);
+    this.logger(`  Dropping foreign key constraint "${constraintName}" from ${qualifiedTableName}...`);
     await this.client.query(`ALTER TABLE ${qualifiedTableName} DROP CONSTRAINT "${constraintName}"`);
-    console.log(`  ✓ Foreign key constraint "${constraintName}" dropped\n`);
+    this.logger(`  ✓ Foreign key constraint "${constraintName}" dropped\n`);
   }
 
   /**
@@ -1533,7 +1537,7 @@ export class DbSchemaManager {
   private async confirm(question: string): Promise<boolean> {
     // If not running in a TTY (like in tests), default to NO for destructive operations
     if (!process.stdin.isTTY) {
-      console.log(`\n⚠️  ${question} [y/N]: N (non-interactive mode, defaulting to NO)`);
+      this.logger(`\n⚠️  ${question} [y/N]: N (non-interactive mode, defaulting to NO)`, 'warn');
       return false;
     }
 
