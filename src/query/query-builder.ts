@@ -6382,6 +6382,77 @@ export class CollectionQueryBuilder<TItem = any> {
   }
 
   /**
+   * Get field references from this condition.
+   * Returns empty since EXISTS subqueries are self-contained correlated subqueries.
+   * Required for duck-typing compatibility with Condition interface when used in WHERE clauses.
+   */
+  getFieldRefs(): FieldRef[] {
+    return [];
+  }
+
+  /**
+   * Build SQL for this collection as a correlated EXISTS subquery.
+   * Produces: EXISTS (SELECT 1 FROM "table" [JOINs] WHERE correlation AND conditions)
+   * Required for duck-typing compatibility with Condition interface when used in WHERE clauses.
+   */
+  buildSql(context: SqlBuildContext): string {
+    if (this.aggregationType !== 'EXISTS') {
+      throw new Error('buildSql() on CollectionQueryBuilder is only supported for EXISTS aggregation');
+    }
+
+    const targetTable = this.targetTable;
+    const foreignKey = this.foreignKey;
+    const sourceTable = this.sourceTable;
+
+    // Build JOINs needed inside the EXISTS subquery
+    const allJoins: string[] = [];
+
+    // Navigation path joins (for reference navigation like pc.order → orders)
+    for (const nav of this.navigationPath) {
+      const joinType = nav.isMandatory ? 'JOIN' : 'LEFT JOIN';
+      const fk = nav.foreignKeys[0];
+      const pk = (nav.matches && nav.matches.length > 0) ? nav.matches[0] : 'id';
+      allJoins.push(`${joinType} "${nav.targetTable}" "${nav.alias}" ON "${nav.sourceAlias}"."${fk}" = "${nav.alias}"."${pk}"`);
+    }
+
+    // SelectMany joins (for selectMany navigation through intermediate tables)
+    for (const nav of this.selectManyJoins) {
+      const joinType = nav.isMandatory ? 'JOIN' : 'LEFT JOIN';
+      const fk = nav.foreignKeys[0];
+      const pk = (nav.matches && nav.matches.length > 0) ? nav.matches[0] : 'id';
+      allJoins.push(`${joinType} "${nav.targetTable}" "${nav.alias}" ON "${nav.sourceAlias}"."${fk}" = "${nav.alias}"."${pk}"`);
+    }
+
+    const navJoinsSQL = allJoins.join('\n');
+
+    // Build WHERE clause: correlation + additional conditions
+    const fkTableAlias = this.foreignKeyTableAlias || targetTable;
+    let whereSQL = `"${fkTableAlias}"."${foreignKey}" = "${sourceTable}"."id"`;
+
+    if (this.whereCond) {
+      const condBuilder = new ConditionBuilder();
+      const { sql: condSql, params, placeholders, paramCounter } = condBuilder.build(this.whereCond, context.paramCounter, context.placeholders);
+      context.paramCounter = paramCounter;
+      context.params.push(...params);
+      if (placeholders) {
+        context.placeholders = placeholders;
+      }
+
+      // Rewrite collection marker aliases to actual table names
+      const markerPattern = new RegExp(`"__collection_${targetTable}__"`, 'g');
+      const rewrittenCondSql = condSql.replace(markerPattern, `"${targetTable}"`);
+
+      whereSQL += ` AND ${rewrittenCondSql}`;
+    }
+
+    const parts = [`EXISTS (SELECT 1 FROM "${targetTable}"`];
+    if (navJoinsSQL) parts.push(navJoinsSQL);
+    parts.push(`WHERE ${whereSQL})`);
+
+    return parts.join('\n');
+  }
+
+  /**
    * Detect navigation property references in the selected fields and add necessary JOINs
    * This supports multi-level navigation like p.task.level.createdBy.username
    */
