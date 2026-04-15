@@ -693,6 +693,7 @@ export class SelectQueryBuilder<TSelection> {
   private manualJoins: ManualJoinDefinition[] = [];
   private joinCounter: number = 0;
   private isDistinct: boolean = false;
+  private _includeCountOver: boolean = false;
   private schemaRegistry?: Map<string, TableSchema>;
   private ctes: DbCte<any>[] = [];  // Track CTEs attached to this query
   private collectionStrategy?: CollectionStrategyType;
@@ -1563,6 +1564,78 @@ export class SelectQueryBuilder<TSelection> {
       : await this.client.query(sql, params);
 
     return parseInt(result.rows[0]?.count ?? '0', 10);
+  }
+
+  /**
+   * Execute query and return results with total count using COUNT(*) OVER().
+   * Useful for pagination - gets data and total count in a single query.
+   */
+  async countOver(): Promise<{ data: ResolveCollectionResults<TSelection>[]; totalCount: number }> {
+    this._includeCountOver = true;
+    try {
+      const options = this.executor?.getOptions();
+      const tracer = new TimeTracer(options?.traceTime ?? false, options?.logger);
+
+      tracer.startPhase('queryBuild');
+
+      const context: QueryContext = tracer.trace('createContext', () => ({
+        ctes: new Map(),
+        cteCounter: 0,
+        paramCounter: 1,
+        allParams: [],
+        collectionStrategy: this.collectionStrategy,
+        executor: this.executor,
+      }));
+
+      const mockRow = tracer.trace('createMockRow', () => this._createMockRow());
+      const selectionResult = tracer.trace('evaluateSelector', () => this.selector(mockRow));
+
+      const { sql, params, nestedPaths } = tracer.trace('buildQuery', () => this.buildQuery(selectionResult, context));
+      tracer.endPhase();
+
+      tracer.startPhase('queryExecution');
+      const result = await tracer.traceAsync('executeQuery', async () =>
+        this.executor
+          ? await this.executor.query(sql, params)
+          : await this.client.query(sql, params),
+        { rowCount: 'pending' }
+      );
+      tracer.endPhase();
+
+      // Extract totalCount from first raw row before transformation
+      // PostgreSQL COUNT() OVER() returns bigint (string in pg driver)
+      const totalCount = result.rows.length > 0 ? parseInt(result.rows[0].__countOver ?? '0', 10) : 0;
+
+      // Strip __countOver from raw rows before processing
+      for (const row of result.rows) {
+        delete row.__countOver;
+      }
+
+      if (this.executor?.getOptions().rawResult) {
+        return { data: result.rows, totalCount };
+      }
+
+      tracer.startPhase('resultProcessing');
+      let rows = result.rows;
+      if (nestedPaths.size > 0) {
+        rows = tracer.trace('reconstructNestedObjects', () =>
+          rows.map(row => this.reconstructNestedObjects(row, nestedPaths)),
+          { rowCount: rows.length }
+        );
+      }
+
+      const data = tracer.trace('transformResults', () =>
+        this.transformResults(rows, selectionResult),
+        { rowCount: rows.length }
+      );
+      tracer.endPhase();
+
+      tracer.logSummary(data.length);
+
+      return { data: data as any, totalCount };
+    } finally {
+      this._includeCountOver = false;
+    }
   }
 
   /**
@@ -4574,6 +4647,11 @@ ${joinClauses.join('\n')}`;
         // LATERAL strategy - use the provided join clause (contains full LATERAL subquery)
         fromClause += `\n${joinClause}`;
       }
+    }
+
+    // Add COUNT(*) OVER() for countOver() support
+    if (this._includeCountOver) {
+      selectParts.push('COUNT(*) OVER() as "__countOver"');
     }
 
     // Add DISTINCT if needed
