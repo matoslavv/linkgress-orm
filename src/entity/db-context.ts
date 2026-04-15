@@ -1806,6 +1806,12 @@ export interface IEntityQueryable<TEntity extends DbEntity> {
   count(): Promise<number>;
 
   /**
+   * Execute query and return results with total count using COUNT(*) OVER().
+   * Useful for pagination - gets data and total count in a single query.
+   */
+  countOver(): Promise<{ data: UnwrapDbColumns<TEntity>[]; totalCount: number }>;
+
+  /**
    * Check if any rows match the query
    */
   exists(): Promise<boolean>;
@@ -1876,6 +1882,8 @@ export interface EntitySelectQueryBuilder<TEntity extends DbEntity, TSelection> 
 
   count(): Promise<number>;
 
+  countOver(): Promise<{ data: ResolveCollectionResults<TSelection>[]; totalCount: number }>;
+
   exists(): Promise<boolean>;
 
   first(): Promise<ResolveCollectionResults<TSelection>>;
@@ -1936,6 +1944,7 @@ export interface EntitySelectQueryBuilder<TEntity extends DbEntity, TSelection> 
   max<TResult = TSelection>(selector?: (entity: TSelection extends DbEntity ? EntityQuery<TSelection> : TSelection) => TResult): Promise<TResult | null>;
   sum<TResult = TSelection>(selector?: (entity: TSelection extends DbEntity ? EntityQuery<TSelection> : TSelection) => TResult): Promise<TResult | null>;
   count(): Promise<number>;
+  countOver(): Promise<{ data: ResolveCollectionResults<TSelection>[]; totalCount: number }>;
   exists(): Promise<boolean>;
 
   // Subquery conversion
@@ -2515,6 +2524,24 @@ export class DbEntityTable<TEntity extends DbEntity> {
       : await client.query(sql, []);
 
     return parseInt(result.rows[0].count);
+  }
+
+  /**
+   * Execute query and return results with total count using COUNT(*) OVER().
+   * Useful for pagination - gets data and total count in a single query.
+   */
+  async countOver(): Promise<{ data: UnwrapDbColumns<TEntity>[]; totalCount: number }> {
+    const schema = this._getSchema();
+    const allColumnsSelector = (e: any) => {
+      const result: any = {};
+      for (const colName of Object.keys(schema.columns)) {
+        result[colName] = e[colName];
+      }
+      return result;
+    };
+
+    const qb = this.context.getTable(this.tableName).select(allColumnsSelector) as any;
+    return qb.countOver();
   }
 
   /**
