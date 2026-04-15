@@ -135,6 +135,7 @@ export {
   lteSubquery,
   SubqueryResult,
   SubqueryMode,
+  CollectionSubquerySource,
 } from './query/subquery';
 
 // CTE (Common Table Expression) support

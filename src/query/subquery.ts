@@ -121,27 +121,52 @@ export function isSubquery(value: any): value is Subquery {
 }
 
 /**
+ * Duck-typed interface for collection-like objects (e.g., CollectionQueryBuilder)
+ * that can be used wherever a Subquery is expected.
+ * This enables generic function syntax: exists(collection.where(...)), notExists(collection.where(...))
+ */
+export interface CollectionSubquerySource {
+  exists(): SqlFragment<boolean>;
+}
+
+/**
+ * Base class for EXISTS / NOT EXISTS conditions.
+ * Accepts either a Subquery or a collection navigation source (CollectionSubquerySource).
+ */
+abstract class ExistsConditionBase extends SqlFragment<boolean> {
+  protected resolved: Subquery | SqlFragment<boolean>;
+
+  constructor(source: Subquery | CollectionSubquerySource) {
+    super([], []);
+    this.resolved = source instanceof Subquery ? source : source.exists();
+  }
+
+  override getFieldRefs(): FieldRef[] {
+    return this.resolved instanceof Subquery
+      ? this.resolved.getOuterFieldRefs()
+      : this.resolved.getFieldRefs();
+  }
+
+  protected buildSubquerySql(context: SqlBuildContext): string {
+    return this.resolved instanceof Subquery
+      ? `(${this.resolved.buildSql(context)})`
+      : '';
+  }
+}
+
+/**
  * Condition: EXISTS (subquery)
  * Extends SqlFragment<boolean> so it works in both WHERE clauses and SELECT projections.
  * In SELECT: produces `EXISTS (SELECT ...) as "alias"` with boolean type inference.
  * In WHERE: works as WhereConditionBase since SqlFragment extends it.
  */
-export class ExistsCondition extends SqlFragment<boolean> {
-  constructor(private subquery: Subquery) {
-    super([], []);
-  }
-
-  /**
-   * Get field refs from outer queries used inside this subquery.
-   * These are propagated to enable JOIN detection in the outer query.
-   */
-  override getFieldRefs(): FieldRef[] {
-    return this.subquery.getOuterFieldRefs();
-  }
-
+export class ExistsCondition extends ExistsConditionBase {
   override buildSql(context: SqlBuildContext): string {
-    const subquerySql = this.subquery.buildSql(context);
-    return `EXISTS (${subquerySql})`;
+    if (this.resolved instanceof Subquery) {
+      return `EXISTS ${this.buildSubquerySql(context)}`;
+    }
+    // Collection source — .exists() already produces "EXISTS (...)"
+    return this.resolved.buildSql(context);
   }
 }
 
@@ -149,22 +174,13 @@ export class ExistsCondition extends SqlFragment<boolean> {
  * Condition: NOT EXISTS (subquery)
  * Extends SqlFragment<boolean> so it works in both WHERE clauses and SELECT projections.
  */
-export class NotExistsCondition extends SqlFragment<boolean> {
-  constructor(private subquery: Subquery) {
-    super([], []);
-  }
-
-  /**
-   * Get field refs from outer queries used inside this subquery.
-   * These are propagated to enable JOIN detection in the outer query.
-   */
-  override getFieldRefs(): FieldRef[] {
-    return this.subquery.getOuterFieldRefs();
-  }
-
+export class NotExistsCondition extends ExistsConditionBase {
   override buildSql(context: SqlBuildContext): string {
-    const subquerySql = this.subquery.buildSql(context);
-    return `NOT EXISTS (${subquerySql})`;
+    if (this.resolved instanceof Subquery) {
+      return `NOT EXISTS ${this.buildSubquerySql(context)}`;
+    }
+    // Collection source — .exists() produces "EXISTS (...)", prepend NOT
+    return `NOT ${this.resolved.buildSql(context)}`;
   }
 }
 
@@ -244,15 +260,15 @@ export class ScalarSubqueryComparison<T> extends WhereConditionBase {
 /**
  * EXISTS condition
  */
-export function exists(subquery: Subquery): ExistsCondition {
-  return new ExistsCondition(subquery);
+export function exists(source: Subquery | CollectionSubquerySource): ExistsCondition {
+  return new ExistsCondition(source);
 }
 
 /**
  * NOT EXISTS condition
  */
-export function notExists(subquery: Subquery): NotExistsCondition {
-  return new NotExistsCondition(subquery);
+export function notExists(source: Subquery | CollectionSubquerySource): NotExistsCondition {
+  return new NotExistsCondition(source);
 }
 
 /**
